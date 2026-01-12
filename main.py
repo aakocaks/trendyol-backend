@@ -1,38 +1,25 @@
-from fastapi import FastAPI
-import requests
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+import base64
+import requests
+from fastapi import FastAPI
 
 app = FastAPI()
 
-# =====================
-# ENV BİLGİLERİ
-# =====================
-SELLER_ID = os.getenv("SELLER_ID")
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
+# ENV'den Trendyol bilgileri
+API_KEY = os.getenv("TRENDYOL_API_KEY")
+API_SECRET = os.getenv("TRENDYOL_API_SECRET")
+SELLER_ID = os.getenv("TRENDYOL_SELLER_ID")
 
-# =====================
-# TEST ENDPOINT
-# =====================
 @app.get("/")
 def root():
     return {
         "status": "ok",
-        "env_loaded": bool(SELLER_ID and API_KEY and API_SECRET)
+        "env_loaded": all([API_KEY, API_SECRET, SELLER_ID])
     }
 
-# =====================
-# TRENDYOL ORDERS
-# =====================
-@app.get("/orders")
-def get_orders():
+def get_orders_from_trendyol():
     auth = f"{API_KEY}:{API_SECRET}"
-    encoded_auth = auth.encode("ascii")
-    import base64
-    encoded_auth = base64.b64encode(encoded_auth).decode("ascii")
+    encoded_auth = base64.b64encode(auth.encode()).decode()
 
     url = f"https://api.trendyol.com/sapigw/suppliers/{SELLER_ID}/orders"
 
@@ -42,32 +29,32 @@ def get_orders():
     }
 
     response = requests.get(url, headers=headers)
-    return response.json()
+    response.raise_for_status()
 
-# =====================
-# KAR / ZARAR HESABI
-# =====================
+    data = response.json()
+    return data.get("content", [])
+
+@app.get("/orders")
+def orders():
+    return get_orders_from_trendyol()
+
 @app.get("/profit")
-def calculate_profit():
-    data = get_orders()
-    orders = data.get("content", [])
+def profit():
+    orders = get_orders_from_trendyol()
 
-    KARGO_UCRETI = 60  # şimdilik sabit
     results = []
 
     for order in orders:
-        order_total = 0
+        total_sales = 0
 
         for line in order.get("lines", []):
-            order_total += line.get("lineGrossAmount", 0)
-
-        net = order_total - KARGO_UCRETI
+            total_sales += line.get("lineGrossAmount", 0)
 
         results.append({
             "orderNumber": order.get("orderNumber"),
-            "sales": order_total,
-            "cargo": KARGO_UCRETI,
-            "profit": net
+            "totalSales": total_sales,
+            "cargoTrackingNumber": order.get("cargoTrackingNumber"),
+            "cargoProvider": order.get("cargoProviderName")
         })
 
     return results
