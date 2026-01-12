@@ -34,6 +34,15 @@ def get_orders():
     }
 
     response = requests.get(url, headers=headers)
+    
+data = response.json()
+orders = data.get("content", [])
+from collections import defaultdict
+
+packages = defaultdict(list)
+
+for order in orders:
+    packages[order["shipmentPackageId"]].append(order)
 
     return response.json()
 @app.get("/profit")
@@ -67,3 +76,32 @@ def calculate_profit():
         "totalOrders": len(results),
         "results": results
     }
+@app.get("/profit")
+def profit():
+
+    response = requests.get(url, headers=headers)
+    data = response.json()
+    orders = data.get("content", [])
+
+    results = []
+
+    for order in orders:
+        order_total = 0
+        cargo_total = 0
+
+        for line in order["lines"]:
+            order_total += line["lineGrossAmount"]
+
+        # Trendyol’dan gelen gerçek kargo bedeli
+        cargo_total = order.get("cargoPrice", 0)
+
+        profit = order_total - cargo_total
+
+        results.append({
+            "orderNumber": order["orderNumber"],
+            "totalSales": order_total,
+            "cargo": cargo_total,
+            "profit": profit
+        })
+
+    return results
