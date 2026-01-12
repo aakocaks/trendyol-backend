@@ -7,3 +7,8 @@ CARGO_PRICES = {
 
 def calculate_cargo_cost(order):
     return CARGO_PRICES.get(order.get("cargoProviderName"), 70)
+
+def calculate_cargo(price: float) -> float:
+    if price >= 300:
+        return 0.0
+    return 29.90
