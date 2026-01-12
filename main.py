@@ -1,22 +1,27 @@
+from fastapi import FastAPI
+import requests
 import os
 import base64
-import requests
-from fastapi import FastAPI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
+# ENV VARIABLES
 API_KEY = os.getenv("TRENDYOL_API_KEY")
 API_SECRET = os.getenv("TRENDYOL_API_SECRET")
 SELLER_ID = os.getenv("TRENDYOL_SELLER_ID")
 
+
 @app.get("/")
-def root():
+def health():
     return {
         "status": "ok",
-        "env_loaded": bool(API_KEY and API_SECRET and SELLER_ID)
+        "env_loaded": all([API_KEY, API_SECRET, SELLER_ID])
     }
 
-@app.get("/orders")
+
 def get_orders():
     auth = f"{API_KEY}:{API_SECRET}"
     encoded_auth = base64.b64encode(auth.encode()).decode()
@@ -34,34 +39,39 @@ def get_orders():
     data = response.json()
     return data.get("content", [])
 
+
+@app.get("/orders")
+def orders():
+    return get_orders()
+
+
 @app.get("/profit")
 def profit():
-    auth = f"{API_KEY}:{API_SECRET}"
-    encoded_auth = base64.b64encode(auth.encode()).decode()
-
-    url = f"https://api.trendyol.com/sapigw/suppliers/{SELLER_ID}/orders"
-
-    headers = {
-        "Authorization": f"Basic {encoded_auth}",
-        "User-Agent": f"{SELLER_ID} - Trendyol API"
-    }
-
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    orders = response.json().get("content", [])
-
+    orders = get_orders()
     results = []
 
     for order in orders:
+        cargo_price = order.get("deliveryFee", 0)
+
         total_sales = 0
-        for line in order.get("lines", []):
-            total_sales += line.get("lineGrossAmount", 0)
+        total_commission = 0
+
+        for line in order["lines"]:
+            sales = line["lineGrossAmount"]
+            commission_rate = line.get("commission", 0) / 100
+            commission = sales * commission_rate
+
+            total_sales += sales
+            total_commission += commission
+
+        net_profit = total_sales - total_commission - cargo_price
 
         results.append({
-            "orderNumber": order.get("orderNumber"),
-            "totalSales": total_sales,
-            "cargoTrackingNumber": order.get("cargoTrackingNumber"),
-            "cargoProvider": order.get("cargoProviderName")
+            "orderNumber": order["orderNumber"],
+            "totalSales": round(total_sales, 2),
+            "commission": round(total_commission, 2),
+            "cargo": round(cargo_price, 2),
+            "netProfit": round(net_profit, 2)
         })
 
     return results
