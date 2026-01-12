@@ -1,5 +1,0 @@
-PRODUCT_COSTS = {
-    "oklpan123": 220.0,
-    "TYCAFFAAADB3986CDDEF45F00": 55.0,
-    "AZ06FB001": 20.0
-}
