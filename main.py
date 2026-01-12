@@ -1,3 +1,4 @@
+from cargo import calculate_cargo_cost
 from fastapi import FastAPI
 import os
 
