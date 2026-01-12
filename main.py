@@ -2,13 +2,10 @@ from fastapi import FastAPI
 import requests
 import os
 import base64
-from dotenv import load_dotenv
-
-load_dotenv()
 
 app = FastAPI()
 
-# ENV VARIABLES
+# ENV
 API_KEY = os.getenv("TRENDYOL_API_KEY")
 API_SECRET = os.getenv("TRENDYOL_API_SECRET")
 SELLER_ID = os.getenv("TRENDYOL_SELLER_ID")
@@ -36,8 +33,7 @@ def get_orders():
     response = requests.get(url, headers=headers)
     response.raise_for_status()
 
-    data = response.json()
-    return data.get("content", [])
+    return response.json().get("content", [])
 
 
 @app.get("/orders")
@@ -48,30 +44,18 @@ def orders():
 @app.get("/profit")
 def profit():
     orders = get_orders()
+
     results = []
 
     for order in orders:
-        cargo_price = order.get("deliveryFee", 0)
+        for line in order.get("lines", []):
+            results.append({
+                "orderNumber": order.get("orderNumber"),
+                "product": line.get("productName"),
+                "salePrice": line.get("lineGrossAmount"),
+            })
 
-        total_sales = 0
-        total_commission = 0
-
-        for line in order["lines"]:
-            sales = line["lineGrossAmount"]
-            commission_rate = line.get("commission", 0) / 100
-            commission = sales * commission_rate
-
-            total_sales += sales
-            total_commission += commission
-
-        net_profit = total_sales - total_commission - cargo_price
-
-        results.append({
-            "orderNumber": order["orderNumber"],
-            "totalSales": round(total_sales, 2),
-            "commission": round(total_commission, 2),
-            "cargo": round(cargo_price, 2),
-            "netProfit": round(net_profit, 2)
-        })
-
-    return results
+    return {
+        "count": len(results),
+        "items": results
+    }
