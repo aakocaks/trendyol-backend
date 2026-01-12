@@ -29,7 +29,38 @@ def orders():
     headers = {
         "Authorization": f"Basic {encoded_auth}",
         "User-Agent": f"{SELLER_ID} - Trendyol API"
+    }@app.get("/summary")
+def order_summary():
+    url = f"https://api.trendyol.com/sapigw/suppliers/{SELLER_ID}/orders"
+    auth = base64.b64encode(f"{API_KEY}:{API_SECRET}".encode()).decode()
+
+    headers = {
+        "Authorization": f"Basic {auth}",
+        "User-Agent": "trendyol-backend"
     }
+
+    r = requests.get(url, headers=headers)
+    data = r.json()
+
+    result = []
+
+    for order in data.get("content", []):
+        lines = order.get("lines", [])
+        if not lines:
+            continue
+
+        product = lines[0]
+
+        result.append({
+            "orderNumber": order.get("orderNumber"),
+            "product": product.get("productName"),
+            "salePrice": product.get("price"),
+            "commission": product.get("commission"),
+            "cargoProvider": order.get("cargoProviderName")
+        })
+
+    return result
+
 
     response = requests.get(url, headers=headers)
     response.raise_for_status()
