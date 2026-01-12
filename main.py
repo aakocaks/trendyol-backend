@@ -35,3 +35,34 @@ def get_orders():
     response = requests.get(url, headers=headers)
 
     return response.json()
+@app.get("/profit")
+def calculate_profit():
+    orders = get_orders_from_trendyol()  # senin mevcut fonksiyonun
+
+    KARGO_UCRETI = 60  # sabit, sonra dinamik yaparız
+    results = []
+
+    for order in orders:
+        for line in order["lines"]:
+            sales = line["lineGrossAmount"]
+            commission = order.get("commission", 0)
+
+            vat_rate = line.get("vatRate", 0) / 100
+            vat = (sales - commission) * vat_rate
+
+            net_profit = sales - commission - vat - KARGO_UCRETI
+
+            results.append({
+                "orderNumber": order["orderNumber"],
+                "product": line["productName"],
+                "sales": sales,
+                "commission": commission,
+                "vat": vat,
+                "cargo": KARGO_UCRETI,
+                "netProfit": round(net_profit, 2)
+            })
+
+    return {
+        "totalOrders": len(results),
+        "results": results
+    }
