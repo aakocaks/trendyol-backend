@@ -146,3 +146,9 @@ def summary_excel(start: str, end: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=kar_zarar.xlsx"}
     )
+from datetime import date
+
+@app.get("/summary/today")
+def today_summary():
+    today = date.today().strftime("%Y-%m-%d")
+    return summary(start=today, end=today)
