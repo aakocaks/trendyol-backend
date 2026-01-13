@@ -8,13 +8,29 @@ from openpyxl import Workbook
 
 app = FastAPI()
 
+# -------------------
+# GENEL KONTROLLER
+# -------------------
+
 @app.get("/")
 def root():
-    return {"status": "ok", "env_loaded": True}
+    return {"status": "ok"}
 
 @app.get("/health")
 def health():
     return {"service": "trendyol-backend", "status": "running"}
+
+@app.get("/env")
+def env_check():
+    return {
+        "TRENDYOL_API_KEY": bool(os.getenv("TRENDYOL_API_KEY")),
+        "TRENDYOL_API_SECRET": bool(os.getenv("TRENDYOL_API_SECRET")),
+        "TRENDYOL_SELLER_ID": bool(os.getenv("TRENDYOL_SELLER_ID")),
+    }
+
+# -------------------
+# TRENDYOL ORDERS
+# -------------------
 
 def get_orders():
     api_key = os.getenv("TRENDYOL_API_KEY")
@@ -22,44 +38,56 @@ def get_orders():
     seller_id = os.getenv("TRENDYOL_SELLER_ID")
 
     auth = f"{api_key}:{api_secret}"
-    encoded = base64.b64encode(auth.encode()).decode()
+    encoded_auth = base64.b64encode(auth.encode()).decode()
 
     url = f"https://api.trendyol.com/sapigw/suppliers/{seller_id}/orders"
     headers = {
-        "Authorization": f"Basic {encoded}",
+        "Authorization": f"Basic {encoded_auth}",
         "User-Agent": f"{seller_id} - Trendyol API"
     }
 
     r = requests.get(url, headers=headers)
     r.raise_for_status()
+
     return r.json().get("content", [])
 
+# -------------------
+# BUGÜNLÜK EXCEL RAPOR
+# -------------------
+
 @app.get("/report/today")
-def today_report():
+def report_today():
     orders = get_orders()
-
-    toplam_ciro = 0
-    toplam_komisyon = 0
-    toplam_kargo = 0
-    toplam_siparis = 0
-
     today = datetime.now().date()
 
+    toplam_siparis = 0
+    toplam_ciro = 0.0
+    toplam_komisyon = 0.0
+    toplam_kargo = 0.0
+
     for order in orders:
-        order_date = datetime.fromtimestamp(order["orderDate"] / 1000).date()
-        if order_date == today:
-            toplam_siparis += 1
-            for line in order.get("lines", []):
-                toplam_ciro += line.get("price", 0)
-                toplam_komisyon += line.get("commission", 0)
-                toplam_kargo += line.get("cargoPrice", 0)
+        order_date_ms = order.get("orderDate")
+        if not order_date_ms:
+            continue
+
+        order_date = datetime.fromtimestamp(order_date_ms / 1000).date()
+        if order_date != today:
+            continue
+
+        toplam_siparis += 1
+
+        for line in order.get("lines", []):
+            toplam_ciro += float(line.get("price") or 0)
+            toplam_komisyon += float(line.get("commission") or 0)
+            toplam_kargo += float(line.get("cargoPrice") or 0)
 
     kdv = toplam_ciro * 0.10
     net_kar = toplam_ciro - toplam_komisyon - toplam_kargo - kdv
 
+    # Excel oluştur
     wb = Workbook()
     ws = wb.active
-    ws.title = "Özet"
+    ws.title = "Gunluk Ozet"
 
     ws.append(["Alan", "Tutar"])
     ws.append(["Toplam Sipariş", toplam_siparis])
@@ -69,7 +97,7 @@ def today_report():
     ws.append(["KDV (%10)", round(kdv, 2)])
     ws.append(["Net Kar", round(net_kar, 2)])
 
-    filename = f"trendyol_rapor_{today}.xlsx"
+    filename = f"trendyol_gunluk_rapor_{today}.xlsx"
     filepath = f"/tmp/{filename}"
     wb.save(filepath)
 
