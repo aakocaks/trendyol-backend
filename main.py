@@ -3,9 +3,11 @@ from fastapi.responses import StreamingResponse
 import os
 import requests
 import base64
-from datetime import datetime
+from datetime import datetime, date
 from openpyxl import Workbook
 import io
+import smtplib
+from email.mime.text import MIMEText
 
 app = FastAPI()
 
@@ -31,10 +33,12 @@ def env_check():
         "API_KEY_SET": bool(os.getenv("TRENDYOL_API_KEY")),
         "API_SECRET_SET": bool(os.getenv("TRENDYOL_API_SECRET")),
         "SELLER_ID_SET": bool(os.getenv("TRENDYOL_SELLER_ID")),
+        "MAIL_USER_SET": bool(os.getenv("MAIL_USER")),
+        "MAIL_TO_SET": bool(os.getenv("MAIL_TO")),
     }
 
 # =========================
-# TRENDYOL ORDERS (TEK YERDEN)
+# TRENDYOL ORDERS
 # =========================
 def fetch_orders():
     api_key = os.getenv("TRENDYOL_API_KEY")
@@ -50,7 +54,7 @@ def fetch_orders():
         "User-Agent": f"{seller_id} - Trendyol API"
     }
 
-    r = requests.get(url, headers=headers)
+    r = requests.get(url, headers=headers, timeout=15)
     r.raise_for_status()
     return r.json().get("content", [])
 
@@ -59,13 +63,9 @@ def orders():
     return fetch_orders()
 
 # =========================
-# SUMMARY (JSON)
+# SUMMARY JSON
 # =========================
-@app.get("/summary")
-def summary(start: str, end: str):
-    start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
-    end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp() * 1000)
-
+def calculate_summary(start_ts, end_ts):
     orders = fetch_orders()
 
     toplam_siparis = 0
@@ -93,8 +93,14 @@ def summary(start: str, end: str):
         "gercek_net_kar": round(net, 2)
     }
 
+@app.get("/summary")
+def summary(start: str, end: str):
+    start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
+    end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp() * 1000)
+    return calculate_summary(start_ts, end_ts)
+
 # =========================
-# SUMMARY EXCEL
+# EXCEL
 # =========================
 @app.get("/summary/excel")
 def summary_excel(start: str, end: str):
@@ -108,13 +114,7 @@ def summary_excel(start: str, end: str):
     ws.title = "Kar-Zarar"
 
     ws.append([
-        "Tarih",
-        "Sipariş No",
-        "Ciro",
-        "Komisyon",
-        "Kargo",
-        "Fatura %10",
-        "Net Kar"
+        "Tarih", "Sipariş No", "Ciro", "Komisyon", "Kargo", "Fatura %10", "Net Kar"
     ])
 
     for order in orders:
@@ -146,21 +146,30 @@ def summary_excel(start: str, end: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=kar_zarar.xlsx"}
     )
-from datetime import date
 
+# =========================
+# BUGÜN / AY
+# =========================
 @app.get("/summary/today")
 def today_summary():
-    today = date.today().strftime("%Y-%m-%d")
-    return summary(start=today, end=today)
+    today = date.today()
+    return calculate_summary(
+        int(today.strftime("%s")) * 1000,
+        int(today.strftime("%s")) * 1000
+    )
+
 @app.get("/summary/month")
 def month_summary():
     today = date.today()
-    start = today.replace(day=1).strftime("%Y-%m-%d")
-    end = today.strftime("%Y-%m-%d")
-    return summary(start=start, end=end)
-import smtplib
-from email.mime.text import MIMEText
+    start = today.replace(day=1)
+    return calculate_summary(
+        int(start.strftime("%s")) * 1000,
+        int(today.strftime("%s")) * 1000
+    )
 
+# =========================
+# MAIL
+# =========================
 @app.get("/send/today-mail")
 def send_today_mail():
     data = today_summary()
@@ -182,7 +191,7 @@ NET KAR: {data['gercek_net_kar']} ₺
     msg["From"] = os.getenv("MAIL_USER")
     msg["To"] = os.getenv("MAIL_TO")
 
-   server = smtplib.SMTP("smtp.gmail.com", 587, timeout=10)
+    server = smtplib.SMTP("smtp.gmail.com", 587, timeout=10)
     server.starttls()
     server.login(os.getenv("MAIL_USER"), os.getenv("MAIL_PASS"))
     server.send_message(msg)
