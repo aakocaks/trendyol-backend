@@ -152,3 +152,9 @@ from datetime import date
 def today_summary():
     today = date.today().strftime("%Y-%m-%d")
     return summary(start=today, end=today)
+@app.get("/summary/month")
+def month_summary():
+    today = date.today()
+    start = today.replace(day=1).strftime("%Y-%m-%d")
+    end = today.strftime("%Y-%m-%d")
+    return summary(start=start, end=end)
