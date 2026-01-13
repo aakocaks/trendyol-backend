@@ -51,3 +51,47 @@ def get_orders():
     response.raise_for_status()
 
     return response.json()
+from datetime import datetime
+
+@app.get("/summary")
+def summary(start: str, end: str):
+    orders_response = get_orders()
+
+    orders = orders_response.get("content", [])
+
+    start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
+    end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp() * 1000)
+
+    toplam_siparis = 0
+    toplam_ciro = 0.0
+    toplam_komisyon = 0.0
+    toplam_kargo = 0.0
+
+    for order in orders:
+        order_date = order.get("orderDate")
+        if not order_date:
+            continue
+
+        if not (start_ts <= order_date <= end_ts):
+            continue
+
+        toplam_siparis += 1
+
+        for line in order.get("lines", []):
+            toplam_ciro += float(line.get("price") or 0)
+            toplam_komisyon += float(line.get("commission") or 0)
+            toplam_kargo += float(line.get("cargoPrice") or 0)
+
+    fatura_kdv = toplam_ciro * 0.10
+    net_kar = toplam_ciro - toplam_komisyon - toplam_kargo - fatura_kdv
+
+    return {
+        "baslangic": start,
+        "bitis": end,
+        "toplam_siparis": toplam_siparis,
+        "toplam_ciro": round(toplam_ciro, 2),
+        "toplam_komisyon": round(toplam_komisyon, 2),
+        "toplam_kargo": round(toplam_kargo, 2),
+        "fatura_%10": round(fatura_kdv, 2),
+        "net_kar": round(net_kar, 2)
+    }
