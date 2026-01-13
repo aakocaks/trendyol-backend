@@ -158,3 +158,34 @@ def month_summary():
     start = today.replace(day=1).strftime("%Y-%m-%d")
     end = today.strftime("%Y-%m-%d")
     return summary(start=start, end=end)
+import smtplib
+from email.mime.text import MIMEText
+
+@app.get("/send/today-mail")
+def send_today_mail():
+    data = today_summary()
+
+    body = f"""
+GÜNLÜK KAR RAPORU
+
+Toplam Sipariş: {data['toplam_siparis']}
+Ciro: {data['toplam_ciro']} ₺
+Komisyon: {data['toplam_komisyon']} ₺
+Kargo: {data['toplam_kargo']} ₺
+Fatura %10: {data['fatura_%10']} ₺
+
+NET KAR: {data['gercek_net_kar']} ₺
+"""
+
+    msg = MIMEText(body)
+    msg["Subject"] = "📊 Günlük Trendyol Kar Raporu"
+    msg["From"] = os.getenv("MAIL_USER")
+    msg["To"] = os.getenv("MAIL_TO")
+
+    server = smtplib.SMTP("smtp.gmail.com", 587)
+    server.starttls()
+    server.login(os.getenv("MAIL_USER"), os.getenv("MAIL_PASS"))
+    server.send_message(msg)
+    server.quit()
+
+    return {"status": "mail gönderildi"}
