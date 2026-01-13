@@ -95,3 +95,59 @@ def summary(start: str, end: str):
         "fatura_%10": round(fatura_kdv, 2),
         "net_kar": round(net_kar, 2)
     }
+from fastapi.responses import FileResponse
+from openpyxl import Workbook
+import tempfile
+
+@app.get("/summary/excel")
+def summary_excel(start: str, end: str):
+    orders_response = get_orders()
+    orders = orders_response.get("content", [])
+
+    start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
+    end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp() * 1000)
+
+    toplam_siparis = 0
+    toplam_ciro = 0.0
+    toplam_komisyon = 0.0
+    toplam_kargo = 0.0
+
+    for order in orders:
+        order_date = order.get("orderDate")
+        if not order_date:
+            continue
+
+        if not (start_ts <= order_date <= end_ts):
+            continue
+
+        toplam_siparis += 1
+
+        for line in order.get("lines", []):
+            toplam_ciro += float(line.get("price") or 0)
+            toplam_komisyon += float(line.get("commission") or 0)
+            toplam_kargo += float(line.get("cargoPrice") or 0)
+
+    fatura_kdv = toplam_ciro * 0.10
+    net_kar = toplam_ciro - toplam_komisyon - toplam_kargo - fatura_kdv
+
+    # Excel oluştur
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Kar_Zarar"
+
+    ws.append(["Alan", "Tutar"])
+    ws.append(["Toplam Sipariş", toplam_siparis])
+    ws.append(["Toplam Ciro", round(toplam_ciro, 2)])
+    ws.append(["Toplam Komisyon", round(toplam_komisyon, 2)])
+    ws.append(["Toplam Kargo", round(toplam_kargo, 2)])
+    ws.append(["Fatura %10", round(fatura_kdv, 2)])
+    ws.append(["Net Kar", round(net_kar, 2)])
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    wb.save(tmp.name)
+
+    return FileResponse(
+        tmp.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"kar_zarar_{start}_{end}.xlsx"
+    )
