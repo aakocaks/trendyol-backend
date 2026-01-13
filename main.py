@@ -182,7 +182,7 @@ NET KAR: {data['gercek_net_kar']} ₺
     msg["From"] = os.getenv("MAIL_USER")
     msg["To"] = os.getenv("MAIL_TO")
 
-    server = smtplib.SMTP("smtp.gmail.com", 587)
+   server = smtplib.SMTP("smtp.gmail.com", 587, timeout=10)
     server.starttls()
     server.login(os.getenv("MAIL_USER"), os.getenv("MAIL_PASS"))
     server.send_message(msg)
