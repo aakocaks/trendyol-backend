@@ -102,3 +102,78 @@ def summary(start: str, end: str):
         "kesilen_kdv_%10": round(kdv, 2),
         "gercek_net_kar": round(net_kar, 2)
     }
+from openpyxl import Workbook
+from fastapi.responses import StreamingResponse
+import io
+
+@app.get("/summary/excel")
+def summary_excel(start: str, end: str):
+    api_key = os.getenv("TRENDYOL_API_KEY")
+    api_secret = os.getenv("TRENDYOL_API_SECRET")
+    seller_id = os.getenv("TRENDYOL_SELLER_ID")
+
+    start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
+    end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp() * 1000)
+
+    auth = f"{api_key}:{api_secret}"
+    encoded_auth = base64.b64encode(auth.encode()).decode()
+
+    url = f"https://api.trendyol.com/sapigw/suppliers/{seller_id}/orders"
+
+    headers = {
+        "Authorization": f"Basic {encoded_auth}",
+        "User-Agent": f"{seller_id} - Trendyol API"
+    }
+
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    data = r.json()
+
+    orders = data.get("content", [])
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Kar-Zarar"
+
+    # Başlıklar
+    ws.append([
+        "Sipariş Tarihi",
+        "Sipariş No",
+        "Ciro",
+        "Komisyon",
+        "Kargo",
+        "KDV %10",
+        "Net Kar"
+    ])
+
+    for order in orders:
+        order_date = order.get("orderDate", 0)
+        if start_ts <= order_date <= end_ts:
+            for line in order.get("lines", []):
+                ciro = line.get("price", 0)
+                komisyon = line.get("commission", 0)
+                kargo = line.get("cargoPrice", 0)
+                kdv = ciro * 0.10
+                net = ciro - komisyon - kargo - kdv
+
+                ws.append([
+                    datetime.fromtimestamp(order_date / 1000).strftime("%Y-%m-%d"),
+                    order.get("orderNumber"),
+                    round(ciro, 2),
+                    round(komisyon, 2),
+                    round(kargo, 2),
+                    round(kdv, 2),
+                    round(net, 2)
+                ])
+
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=kar_zarar_raporu.xlsx"
+        }
+    )
