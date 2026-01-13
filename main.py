@@ -1,5 +1,8 @@
 from fastapi import FastAPI
 import os
+import requests
+import base64
+from datetime import datetime
 
 app = FastAPI()
 
@@ -8,7 +11,7 @@ app = FastAPI()
 def root():
     return {"ok": True}
 
-# Health check (Render sever bunu)
+# Health check
 @app.get("/health")
 def health():
     return {
@@ -24,9 +27,8 @@ def env_check():
         "API_SECRET_SET": bool(os.getenv("TRENDYOL_API_SECRET")),
         "SELLER_ID_SET": bool(os.getenv("TRENDYOL_SELLER_ID")),
     }
-import requests
-import base64
 
+# Siparişleri çek
 @app.get("/orders")
 def get_orders():
     api_key = os.getenv("TRENDYOL_API_KEY")
@@ -45,14 +47,11 @@ def get_orders():
 
     r = requests.get(url, headers=headers)
     r.raise_for_status()
-
     return r.json()
-from datetime import datetime
 
+# Tarihli özet (kâr / zarar)
 @app.get("/summary")
 def summary(start: str, end: str):
-    import os, base64, requests
-
     api_key = os.getenv("TRENDYOL_API_KEY")
     api_secret = os.getenv("TRENDYOL_API_SECRET")
     seller_id = os.getenv("TRENDYOL_SELLER_ID")
@@ -83,7 +82,6 @@ def summary(start: str, end: str):
 
     for order in orders:
         order_date = order.get("orderDate", 0)
-
         if start_ts <= order_date <= end_ts:
             toplam_siparis += 1
             for line in order.get("lines", []):
@@ -102,4 +100,5 @@ def summary(start: str, end: str):
         "toplam_komisyon": round(toplam_komisyon, 2),
         "toplam_kargo": round(toplam_kargo, 2),
         "kesilen_kdv_%10": round(kdv, 2),
-        "gercek_net_kar": round(net_kar, 2_
+        "gercek_net_kar": round(net_kar, 2)
+    }
