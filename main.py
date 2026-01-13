@@ -7,6 +7,41 @@ from datetime import datetime, date
 from openpyxl import Workbook
 import io
 import smtplib
+from email.message import EmailMessage
+
+def send_mail(subject, body, attachment_path=None):
+    try:
+        mail_user = os.getenv("MAIL_USER")
+        mail_pass = os.getenv("MAIL_PASS")
+        mail_to = os.getenv("MAIL_TO")
+
+        msg = EmailMessage()
+        msg["From"] = mail_user
+        msg["To"] = mail_to
+        msg["Subject"] = subject
+        msg.set_content(body)
+
+        if attachment_path:
+            with open(attachment_path, "rb") as f:
+                msg.add_attachment(
+                    f.read(),
+                    maintype="application",
+                    subtype="octet-stream",
+                    filename=os.path.basename(attachment_path)
+                )
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(mail_user, mail_pass)
+            smtp.send_message(msg)
+
+        return {"mail": "ok"}
+
+    except Exception as e:
+        return {
+            "mail": "failed",
+            "error": str(e)
+        }
+
 from email.mime.text import MIMEText
 
 app = FastAPI()
