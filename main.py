@@ -47,13 +47,18 @@ def get_orders():
     r.raise_for_status()
 
     return r.json()
+from datetime import datetime
+
 @app.get("/summary")
-def summary():
+def summary(start: str, end: str):
     import os, base64, requests
 
     api_key = os.getenv("TRENDYOL_API_KEY")
     api_secret = os.getenv("TRENDYOL_API_SECRET")
     seller_id = os.getenv("TRENDYOL_SELLER_ID")
+
+    start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
+    end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp() * 1000)
 
     auth = f"{api_key}:{api_secret}"
     encoded_auth = base64.b64encode(auth.encode()).decode()
@@ -71,26 +76,30 @@ def summary():
 
     orders = data.get("content", [])
 
-    toplam_siparis = len(orders)
+    toplam_siparis = 0
     toplam_ciro = 0
     toplam_komisyon = 0
     toplam_kargo = 0
 
     for order in orders:
-        for line in order.get("lines", []):
-            toplam_ciro += line.get("price", 0)
-            toplam_komisyon += line.get("commission", 0)
-            toplam_kargo += line.get("cargoPrice", 0)
+        order_date = order.get("orderDate", 0)
+
+        if start_ts <= order_date <= end_ts:
+            toplam_siparis += 1
+            for line in order.get("lines", []):
+                toplam_ciro += line.get("price", 0)
+                toplam_komisyon += line.get("commission", 0)
+                toplam_kargo += line.get("cargoPrice", 0)
 
     kdv = toplam_ciro * 0.10
-
     net_kar = toplam_ciro - toplam_komisyon - toplam_kargo - kdv
 
     return {
+        "baslangic": start,
+        "bitis": end,
         "toplam_siparis": toplam_siparis,
         "toplam_ciro": round(toplam_ciro, 2),
         "toplam_komisyon": round(toplam_komisyon, 2),
         "toplam_kargo": round(toplam_kargo, 2),
         "kesilen_kdv_%10": round(kdv, 2),
-        "gercek_net_kar": round(net_kar, 2)
-    }
+        "gercek_net_kar": round(net_kar, 2_
