@@ -49,11 +49,11 @@ def get_orders():
     return r.json()
 @app.get("/summary")
 def summary():
+    import os, base64, requests
+
     api_key = os.getenv("TRENDYOL_API_KEY")
     api_secret = os.getenv("TRENDYOL_API_SECRET")
     seller_id = os.getenv("TRENDYOL_SELLER_ID")
-
-    import base64, requests
 
     auth = f"{api_key}:{api_secret}"
     encoded_auth = base64.b64encode(auth.encode()).decode()
@@ -74,15 +74,23 @@ def summary():
     toplam_siparis = len(orders)
     toplam_ciro = 0
     toplam_komisyon = 0
+    toplam_kargo = 0
 
     for order in orders:
         for line in order.get("lines", []):
             toplam_ciro += line.get("price", 0)
             toplam_komisyon += line.get("commission", 0)
+            toplam_kargo += line.get("cargoPrice", 0)
+
+    kdv = toplam_ciro * 0.10
+
+    net_kar = toplam_ciro - toplam_komisyon - toplam_kargo - kdv
 
     return {
         "toplam_siparis": toplam_siparis,
         "toplam_ciro": round(toplam_ciro, 2),
         "toplam_komisyon": round(toplam_komisyon, 2),
-        "net_kazanc": round(toplam_ciro - toplam_komisyon, 2)
+        "toplam_kargo": round(toplam_kargo, 2),
+        "kesilen_kdv_%10": round(kdv, 2),
+        "gercek_net_kar": round(net_kar, 2)
     }
