@@ -1,26 +1,30 @@
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 import os
 import requests
 import base64
 from datetime import datetime
-FATURA_ORANI = 0.10  # %10 fatura
+from openpyxl import Workbook
+import io
 
 app = FastAPI()
 
-# Ana kontrol
+# =========================
+# SABİTLER
+# =========================
+FATURA_ORANI = 0.10  # %10 fatura
+
+# =========================
+# KONTROL
+# =========================
 @app.get("/")
 def root():
     return {"ok": True}
 
-# Health check
 @app.get("/health")
 def health():
-    return {
-        "service": "trendyol-backend",
-        "status": "running"
-    }
+    return {"status": "running"}
 
-# Ortam değişkenleri kontrolü
 @app.get("/env")
 def env_check():
     return {
@@ -29,153 +33,107 @@ def env_check():
         "SELLER_ID_SET": bool(os.getenv("TRENDYOL_SELLER_ID")),
     }
 
-# Siparişleri çek
-@app.get("/orders")
-def get_orders():
+# =========================
+# TRENDYOL ORDERS (TEK YERDEN)
+# =========================
+def fetch_orders():
     api_key = os.getenv("TRENDYOL_API_KEY")
     api_secret = os.getenv("TRENDYOL_API_SECRET")
     seller_id = os.getenv("TRENDYOL_SELLER_ID")
 
     auth = f"{api_key}:{api_secret}"
-    encoded_auth = base64.b64encode(auth.encode()).decode()
+    encoded = base64.b64encode(auth.encode()).decode()
 
     url = f"https://api.trendyol.com/sapigw/suppliers/{seller_id}/orders"
-
     headers = {
-        "Authorization": f"Basic {encoded_auth}",
+        "Authorization": f"Basic {encoded}",
         "User-Agent": f"{seller_id} - Trendyol API"
     }
 
     r = requests.get(url, headers=headers)
     r.raise_for_status()
-    return r.json()
+    return r.json().get("content", [])
 
-# Tarihli özet (kâr / zarar)
+@app.get("/orders")
+def orders():
+    return fetch_orders()
+
+# =========================
+# SUMMARY (JSON)
+# =========================
 @app.get("/summary")
 def summary(start: str, end: str):
-    api_key = os.getenv("TRENDYOL_API_KEY")
-    api_secret = os.getenv("TRENDYOL_API_SECRET")
-    seller_id = os.getenv("TRENDYOL_SELLER_ID")
-
     start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
     end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp() * 1000)
 
-    auth = f"{api_key}:{api_secret}"
-    encoded_auth = base64.b64encode(auth.encode()).decode()
+    orders = fetch_orders()
 
-    url = f"https://api.trendyol.com/sapigw/suppliers/{seller_id}/orders"
+    toplam_siparis = 0
+    toplam_ciro = 0.0
+    toplam_komisyon = 0.0
+    toplam_kargo = 0.0
 
-    headers = {
-        "Authorization": f"Basic {encoded_auth}",
-        "User-Agent": f"{seller_id} - Trendyol API"
-    }
+    for order in orders:
+        if start_ts <= order.get("orderDate", 0) <= end_ts:
+            toplam_siparis += 1
+            for line in order.get("lines", []):
+                toplam_ciro += line.get("price", 0)
+                toplam_komisyon += line.get("commission", 0)
+                toplam_kargo += line.get("cargoPrice", 0)
 
-    r = requests.get(url, headers=headers)
-    r.raise_for_status()
-    data = r.json()
-
-    orders = data.get("content", [])
-
-   toplam_siparis = 0
-toplam_ciro = 0
-toplam_komisyon = 0
-toplam_kargo = 0
-
-for order in orders:
-    order_date = order.get("orderDate", 0)
-
-    if start_ts <= order_date <= end_ts:
-        toplam_siparis += 1
-
-        for line in order.get("lines", []):
-            fiyat = line.get("price", 0)
-            komisyon = line.get("commission", 0)
-
-            toplam_ciro += fiyat
-            toplam_komisyon += komisyon
-
-        # 🔴 KARGO BURADA — SABİT DEĞİL
-        toplam_kargo += order.get("cargoPrice", 0)
-fatura = toplam_ciro * FATURA_ORANI
-
-net_kar = (
-    toplam_ciro
-    - toplam_komisyon
-    - toplam_kargo
-    - fatura
-)
+    fatura = toplam_ciro * FATURA_ORANI
+    net = toplam_ciro - toplam_komisyon - toplam_kargo - fatura
 
     return {
-        "baslangic": start,
-        "bitis": end,
         "toplam_siparis": toplam_siparis,
         "toplam_ciro": round(toplam_ciro, 2),
         "toplam_komisyon": round(toplam_komisyon, 2),
         "toplam_kargo": round(toplam_kargo, 2),
-        "kesilen_kdv_%10": round(kdv, 2),
-        "gercek_net_kar": round(net_kar, 2)
+        "fatura_%10": round(fatura, 2),
+        "gercek_net_kar": round(net, 2)
     }
-from openpyxl import Workbook
-from fastapi.responses import StreamingResponse
-import io
 
+# =========================
+# SUMMARY EXCEL
+# =========================
 @app.get("/summary/excel")
 def summary_excel(start: str, end: str):
-    api_key = os.getenv("TRENDYOL_API_KEY")
-    api_secret = os.getenv("TRENDYOL_API_SECRET")
-    seller_id = os.getenv("TRENDYOL_SELLER_ID")
-
     start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
     end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp() * 1000)
 
-    auth = f"{api_key}:{api_secret}"
-    encoded_auth = base64.b64encode(auth.encode()).decode()
-
-    url = f"https://api.trendyol.com/sapigw/suppliers/{seller_id}/orders"
-
-    headers = {
-        "Authorization": f"Basic {encoded_auth}",
-        "User-Agent": f"{seller_id} - Trendyol API"
-    }
-
-    r = requests.get(url, headers=headers)
-    r.raise_for_status()
-    data = r.json()
-
-    orders = data.get("content", [])
+    orders = fetch_orders()
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Kar-Zarar"
 
-    # Başlıklar
     ws.append([
-        "Sipariş Tarihi",
+        "Tarih",
         "Sipariş No",
         "Ciro",
         "Komisyon",
         "Kargo",
-        "KDV %10",
+        "Fatura %10",
         "Net Kar"
     ])
 
     for order in orders:
-        order_date = order.get("orderDate", 0)
-        if start_ts <= order_date <= end_ts:
+        if start_ts <= order.get("orderDate", 0) <= end_ts:
+            tarih = datetime.fromtimestamp(order["orderDate"] / 1000).strftime("%Y-%m-%d")
             for line in order.get("lines", []):
                 ciro = line.get("price", 0)
                 komisyon = line.get("commission", 0)
                 kargo = line.get("cargoPrice", 0)
-                kdv = ciro * 0.10
-                net = ciro - komisyon - kargo - kdv
+                fatura = ciro * FATURA_ORANI
+                net = ciro - komisyon - kargo - fatura
 
                 ws.append([
-                    datetime.fromtimestamp(order_date / 1000).strftime("%Y-%m-%d"),
+                    tarih,
                     order.get("orderNumber"),
                     round(ciro, 2),
                     round(komisyon, 2),
                     round(kargo, 2),
-                    round(kdv, 2),
+                    round(fatura, 2),
                     round(net, 2)
                 ])
 
@@ -186,7 +144,5 @@ def summary_excel(start: str, end: str):
     return StreamingResponse(
         stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": "attachment; filename=kar_zarar_raporu.xlsx"
-        }
+        headers={"Content-Disposition": "attachment; filename=kar_zarar.xlsx"}
     )
