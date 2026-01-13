@@ -3,6 +3,7 @@ import os
 import requests
 import base64
 from datetime import datetime
+FATURA_ORANI = 0.10  # %10 fatura
 
 app = FastAPI()
 
@@ -75,22 +76,34 @@ def summary(start: str, end: str):
 
     orders = data.get("content", [])
 
-    toplam_siparis = 0
-    toplam_ciro = 0
-    toplam_komisyon = 0
-    toplam_kargo = 0
+   toplam_siparis = 0
+toplam_ciro = 0
+toplam_komisyon = 0
+toplam_kargo = 0
 
-    for order in orders:
-        order_date = order.get("orderDate", 0)
-        if start_ts <= order_date <= end_ts:
-            toplam_siparis += 1
-            for line in order.get("lines", []):
-                toplam_ciro += line.get("price", 0)
-                toplam_komisyon += line.get("commission", 0)
-                toplam_kargo += line.get("cargoPrice", 0)
+for order in orders:
+    order_date = order.get("orderDate", 0)
 
-    kdv = toplam_ciro * 0.10
-    net_kar = toplam_ciro - toplam_komisyon - toplam_kargo - kdv
+    if start_ts <= order_date <= end_ts:
+        toplam_siparis += 1
+
+        for line in order.get("lines", []):
+            fiyat = line.get("price", 0)
+            komisyon = line.get("commission", 0)
+
+            toplam_ciro += fiyat
+            toplam_komisyon += komisyon
+
+        # 🔴 KARGO BURADA — SABİT DEĞİL
+        toplam_kargo += order.get("cargoPrice", 0)
+fatura = toplam_ciro * FATURA_ORANI
+
+net_kar = (
+    toplam_ciro
+    - toplam_komisyon
+    - toplam_kargo
+    - fatura
+)
 
     return {
         "baslangic": start,
