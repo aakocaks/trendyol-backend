@@ -1,6 +1,29 @@
 from fastapi import FastAPI
 import os
 
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
+
+security = HTTPBasic()
+
+def check_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_user = secrets.compare_digest(
+        credentials.username,
+        os.getenv("PANEL_USER", "")
+    )
+    correct_pass = secrets.compare_digest(
+        credentials.password,
+        os.getenv("PANEL_PASS", "")
+    )
+
+    if not (correct_user and correct_pass):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Yetkisiz",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
 app = FastAPI()
 
 @app.get("/")
