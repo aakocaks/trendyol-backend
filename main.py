@@ -255,47 +255,76 @@ from fastapi.responses import HTMLResponse
 def panel(key: str):
     check_panel_key(key)
     return """
-    <html>
-    <head>
-        <title>Trendyol Panel</title>
-        <style>
-            body { font-family: Arial; background:#f5f6fa; padding:40px; }
-            h1 { margin-bottom:20px; }
-            input, button {
-                padding:10px;
-                margin:8px;
-                font-size:15px;
-            }
-        </style>
-    </head>
-    <body>
-        <h1>📊 Trendyol Rapor Paneli</h1>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Trendyol Panel</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f6fa;
+            padding: 40px;
+        }
+        h1 {
+            margin-bottom: 20px;
+        }
+        input, button {
+            padding: 10px;
+            margin: 6px;
+            font-size: 15px;
+        }
+        button {
+            cursor: pointer;
+        }
+        .box {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
 
-        <h3>📅 Tarih Aralığı Özet Excel</h3>
-        <input type="date" id="start">
-        <input type="date" id="end">
-        <button onclick="downloadSummary()">📥 Özet Excel</button>
+<h1>📊 Trendyol Rapor Paneli</h1>
 
-        <h3>📦 Sipariş Detay</h3>
-        <button onclick="window.location.href='/orders/excel?key=""" + key + """'">
-            📥 Sipariş Detay Excel
-        </button>
+<div class="box">
+    <h3>📅 Tarih Aralığı Özet Excel</h3>
+    <input type="date" id="start">
+    <input type="date" id="end">
+    <br>
+    <button onclick="downloadSummary()">📥 Özet Excel İndir</button>
+</div>
 
-        <script>
-            function downloadSummary() {
-                const start = document.getElementById('start').value;
-                const end = document.getElementById('end').value;
+<div class="box">
+    <h3>📦 Sipariş Detay Excel</h3>
+    <button onclick="downloadOrders()">📥 Sipariş Detay Excel İndir</button>
+</div>
 
-                if (!start || !end) {
-                    alert("Tarih seç kanka 🙂");
-                    return;
-                }
+<script>
+    const params = new URLSearchParams(window.location.search);
+    const key = params.get("key");
 
-                window.location.href =
-                    `/summary/excel?start=${start}&end=${end}&key=` + """ + key + """;
-            }
-        </script>
-    </body>
-    </html>
-    """
+    function downloadSummary() {
+        const start = document.getElementById("start").value;
+        const end = document.getElementById("end").value;
 
+        if (!start || !end) {
+            alert("Tarih seçmen lazım kanka 🙂");
+            return;
+        }
+
+        window.location.href =
+            `/summary/excel?start=${start}&end=${end}&key=${key}`;
+    }
+
+    function downloadOrders() {
+        window.location.href = `/orders/excel?key=${key}`;
+    }
+</script>
+
+</body>
+</html>
+"""
