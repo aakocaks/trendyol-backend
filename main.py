@@ -194,3 +194,43 @@ function indir() {
 </body>
 </html>
 """
+from fastapi import Query
+
+@app.get("/summary")
+def summary(
+    start: str = Query(...),
+    end: str = Query(...)
+):
+    orders = get_orders()
+
+    start_date = datetime.strptime(start, "%Y-%m-%d").date()
+    end_date = datetime.strptime(end, "%Y-%m-%d").date()
+
+    toplam_siparis = 0
+    toplam_ciro = 0.0
+    toplam_komisyon = 0.0
+    toplam_kargo = 0.0
+
+    for order in orders:
+        order_date_ms = order.get("orderDate")
+        if not order_date_ms:
+            continue
+
+        order_date = datetime.fromtimestamp(order_date_ms / 1000).date()
+        if not (start_date <= order_date <= end_date):
+            continue
+
+        toplam_siparis += 1
+        toplam_ciro += order.get("totalPrice", 0)
+        toplam_komisyon += order.get("commission", 0)
+        toplam_kargo += order.get("cargoPrice", 0)
+
+    net_kar = toplam_ciro - toplam_komisyon - toplam_kargo
+
+    return {
+        "siparis": toplam_siparis,
+        "ciro": round(toplam_ciro, 2),
+        "komisyon": round(toplam_komisyon, 2),
+        "kargo": round(toplam_kargo, 2),
+        "net_kar": round(net_kar, 2)
+    }
