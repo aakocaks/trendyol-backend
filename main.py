@@ -45,11 +45,6 @@ def _ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
 def date_range_to_ms(start_str: str, end_str: str) -> tuple[int, int]:
-    """
-    start/end: YYYY-MM-DD
-    start_ms: gün başı (00:00)
-    end_ms: gün sonu (23:59:59.999)
-    """
     s = datetime.strptime(start_str, "%Y-%m-%d")
     e = datetime.strptime(end_str, "%Y-%m-%d")
     start_dt = datetime(s.year, s.month, s.day, 0, 0, 0)
@@ -70,195 +65,146 @@ def pick(d: dict, keys: list[str], default=0.0) -> float:
             return _num(d.get(k), default)
     return _num(default)
 
-def deep_get(d: Any, path: list[str]) -> Any:
-    cur = d
-    for p in path:
-        if not isinstance(cur, dict):
-            return None
-        cur = cur.get(p)
-        if cur is None:
-            return None
-    return cur
-
 def get_qty(line: dict) -> float:
     return pick(line, ["quantity", "qty", "amount", "count"], default=1.0) or 1.0
 
 def get_sale_price(line: dict) -> float:
-    """
-    Trendyol line alanları değişebiliyor.
-    """
-    price = pick(line, ["price", "salePrice", "totalPrice", "totalAmount", "amount"], default=0.0)
+    # sende price/amount/lineGrossAmount/lineUnitPrice var
+    price = pick(line, ["price", "amount", "lineGrossAmount", "totalPrice", "totalAmount"], default=0.0)
     if price and price > 0:
         return price
-    unit = pick(line, ["unitPrice", "unitSalePrice", "sellingPrice"], default=0.0)
+    unit = pick(line, ["lineUnitPrice", "unitPrice", "unitSalePrice", "sellingPrice"], default=0.0)
     return unit * get_qty(line)
 
 def get_commission(line: dict) -> float:
     return pick(line, ["commission", "commissionAmount", "tyCommissionAmount", "commissionTotal"], default=0.0)
 
-def get_cargo_seller(line: dict) -> float:
-    """
-    Kargo alanı farklı gelebilir.
-    """
-    return pick(line, ["cargoPrice", "cargoAmount", "shipmentFee", "shippingFee", "sellerCargoAmount"], default=0.0)
-
-# -----------------------------
-# İNDİRİM / KAMPANYA (Flaş ürün dahil)
-# -----------------------------
-SELLER_HINTS = {"seller", "supplier", "merchant", "satici", "tedarikci"}
-TY_HINTS = {"trendyol", "marketplace", "platform", "ty"}
-
-def _owner_bucket(obj: dict) -> str | None:
-    """
-    discountDetails gibi objelerde kimin karşıladığına dair ipucu yakala.
-    """
-    # en yaygın olabilecek alan isimleri:
-    owner = (
-        (obj.get("discountOwner") or obj.get("owner") or obj.get("payer") or obj.get("coveredBy"))
-        if isinstance(obj, dict) else None
-    )
-    if isinstance(owner, str):
-        low = owner.lower()
-        if any(h in low for h in SELLER_HINTS):
-            return "SELLER"
-        if any(h in low for h in TY_HINTS):
-            return "TY"
-
-    dtype = obj.get("discountType") if isinstance(obj, dict) else None
-    if isinstance(dtype, str):
-        low = dtype.lower()
-        if any(h in low for h in SELLER_HINTS):
-            return "SELLER"
-        if any(h in low for h in TY_HINTS):
-            return "TY"
-
-    source = obj.get("source") if isinstance(obj, dict) else None
-    if isinstance(source, str):
-        low = source.lower()
-        if any(h in low for h in SELLER_HINTS):
-            return "SELLER"
-        if any(h in low for h in TY_HINTS):
-            return "TY"
-
-    return None
-
-def _discount_amount_from_obj(obj: dict) -> float:
-    """
-    discountDetails item içinden indirim tutarını yakala.
-    """
-    return pick(
-        obj,
-        [
-            "amount",
-            "discountAmount",
-            "totalDiscountAmount",
-            "totalDiscount",
-            "discount",
-            "discountTotal",
-            "priceDifference",
-        ],
-        default=0.0
-    )
-
+# =================================================
+# İNDİRİM / KAMPANYA (SENİN GELEN ALANLARA GÖRE)
+# =================================================
 def parse_discounts(line: dict) -> tuple[float, float]:
     """
-    Satırdan (seller_discount, trendyol_discount) döner.
-    Önce direkt alanlar, sonra discountDetails/promotions gibi listeler.
+    (seller_discount, trendyol_discount)
+
+    Senin sample_line’da şu alanlar var:
+      - lineSellerDiscount
+      - lineTyDiscount
+      - lineTotalDiscount
+      - discountDetails[*].lineItemSellerDiscount / lineItemTyDiscount
+      - tyDiscount (bazı yerlerde)
     """
-    # 1) Direkt alanlar (en kolay)
-    seller_direct = pick(line, ["sellerDiscountAmount", "sellerDiscount", "sellerDiscountTotal"], default=0.0)
-    ty_direct = pick(line, ["tyDiscountAmount", "trendyolDiscountAmount", "marketplaceDiscountAmount"], default=0.0)
+    # 1) direkt line alanları
+    seller = pick(line, ["lineSellerDiscount", "sellerDiscountAmount", "sellerDiscount", "sellerDiscountTotal"], default=0.0)
+    ty = pick(line, ["lineTyDiscount", "tyDiscount", "tyDiscountAmount", "trendyolDiscountAmount", "marketplaceDiscountAmount"], default=0.0)
 
-    seller = seller_direct
-    ty = ty_direct
+    # 2) discountDetails listesi (sende var)
+    details = line.get("discountDetails")
+    if isinstance(details, list):
+        for obj in details:
+            if not isinstance(obj, dict):
+                continue
+            seller += pick(obj, ["lineItemSellerDiscount", "sellerDiscountAmount", "sellerDiscount"], default=0.0)
+            ty += pick(obj, ["lineItemTyDiscount", "tyDiscountAmount", "trendyolDiscountAmount"], default=0.0)
 
-    # 2) nested yapılar (discountDetails / promotions / discounts)
-    candidates = []
-    for key in ["discountDetails", "discounts", "promotions", "promotionDetails", "campaignDetails"]:
-        v = line.get(key)
-        if isinstance(v, list):
-            candidates.extend([x for x in v if isinstance(x, dict)])
-
-    # bazen tek obje olabilir
-    for key in ["discountDetail", "promotionDetail", "campaignDetail"]:
-        v = line.get(key)
-        if isinstance(v, dict):
-            candidates.append(v)
-
-    # 3) candidates'tan topla
-    for obj in candidates:
-        amt = _discount_amount_from_obj(obj)
-        if not amt:
-            continue
-        bucket = _owner_bucket(obj)
-        if bucket == "SELLER":
-            seller += amt
-        elif bucket == "TY":
-            ty += amt
-        else:
-            # owner belli değilse: EN AZINDAN "seller" / "trendyol" kelimesi kampanya isminde geçiyor mu?
-            name = obj.get("name") or obj.get("promotionName") or obj.get("campaignName") or ""
-            if isinstance(name, str):
-                low = name.lower()
-                if "trendyol" in low:
-                    ty += amt
-                else:
-                    # belirsizse satıcıya yazmak daha güvenli (kâr şişmesin diye)
-                    seller += amt
+    # 3) total discount var ama owner ayrımı yoksa dokunmuyoruz (çifte saymasın diye)
+    # total = pick(line, ["lineTotalDiscount", "discount"], default=0.0)
 
     return float(seller), float(ty)
 
 def get_campaign_label(line: dict) -> str:
     """
-    Flaş ürün / kampanya bilgisi için label üretir.
-    Kesin alan adı her hesapta aynı olmayabiliyor; bu yüzden çoklu deneme.
+    Sende kampanya: salesCampaignId geliyor.
     """
-    # direkt isim/id alanları
+    scid = line.get("salesCampaignId")
+    if scid is not None and str(scid).strip():
+        return f"salesCampaignId:{scid}"
+    # fallback varsa
     for k in ["campaignName", "promotionName", "flashSaleName", "campaign", "promotion", "discountName"]:
         v = line.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
-
-    for k in ["campaignId", "promotionId", "flashSaleId", "campaignCode", "promotionCode"]:
-        v = line.get(k)
-        if v is not None and str(v).strip():
-            return f"{k}:{v}"
-
-    # discountDetails içinden isim yakala
-    for key in ["discountDetails", "promotions", "discounts", "promotionDetails", "campaignDetails"]:
-        v = line.get(key)
-        if isinstance(v, list):
-            for obj in v:
-                if not isinstance(obj, dict):
-                    continue
-                name = obj.get("campaignName") or obj.get("promotionName") or obj.get("name")
-                if isinstance(name, str) and name.strip():
-                    return name.strip()
-                cid = obj.get("campaignId") or obj.get("promotionId")
-                if cid is not None and str(cid).strip():
-                    return f"campaign/promo:{cid}"
-
-    # fallback: flash flag
-    for k in ["isFlashSale", "flashSale", "isCampaign", "campaignApplied"]:
-        v = line.get(k)
-        if v is True:
-            return "Kampanya/Flaş"
     return ""
 
-def calc_profit_for_line(line: dict) -> dict:
+# =================================================
+# KARGO (SİPARİŞ SEVİYESİNDEN YAKALA + SATIRLARA PAYLAŞTIR)
+# =================================================
+def get_order_cargo_total(order: dict) -> float:
     """
-    TEK GERÇEK HESAP FONKSİYONU.
-    Panel/Excel/JSON hepsi buradan hesaplar.
+    Kargo bazı hesaplarda order içinde, bazı hesaplarda shipmentPackages içinde gelir.
+    Biz olabildiğince yakalıyoruz.
     """
+    # order level dene
+    cargo = pick(order, ["cargoPrice", "cargoAmount", "shipmentFee", "shippingFee", "sellerCargoAmount"], default=0.0)
+    if cargo and cargo > 0:
+        return cargo
+
+    # shipmentPackages varsa tara
+    packs = order.get("shipmentPackages")
+    if isinstance(packs, list):
+        total = 0.0
+        for p in packs:
+            if not isinstance(p, dict):
+                continue
+            total += pick(p, ["cargoPrice", "cargoAmount", "shipmentFee", "shippingFee", "sellerCargoAmount"], default=0.0)
+        return float(total)
+
+    return 0.0
+
+def allocate_cargo_per_line(order: dict) -> dict[int, float]:
+    """
+    Kargo toplamını satır satış tutarına göre paylaştırır.
+    Dönüş: {lineId/int: allocated_cargo}
+    """
+    total_cargo = get_order_cargo_total(order)
+    lines = order.get("lines") or []
+    if not total_cargo or not lines:
+        return {}
+
+    # ağırlık: satış fiyatı (line)
+    weights = []
+    sum_w = 0.0
+    for l in lines:
+        if not isinstance(l, dict):
+            continue
+        w = get_sale_price(l)
+        if w < 0:
+            w = 0.0
+        weights.append((l, w))
+        sum_w += w
+
+    if sum_w <= 0:
+        # eşit böl
+        per = float(total_cargo) / float(len(weights))
+        out = {}
+        for l, _ in weights:
+            lid = l.get("lineId") or l.get("id")
+            if lid is not None:
+                out[int(lid)] = per
+        return out
+
+    out = {}
+    # paylaştır
+    for l, w in weights:
+        lid = l.get("lineId") or l.get("id")
+        if lid is None:
+            continue
+        out[int(lid)] = float(total_cargo) * (w / sum_w)
+    return out
+
+# =================================================
+# TEK HESAP (ORDER CONTEXT + LINE)
+# =================================================
+def calc_profit_for_line(line: dict, allocated_cargo: float = 0.0) -> dict:
     qty = get_qty(line)
     sale = get_sale_price(line)
 
     commission = get_commission(line)
-    cargo = get_cargo_seller(line)
-
     seller_disc, ty_disc = parse_discounts(line)
 
-    # Fatura %10: satıcının eline geçen (satış - satıcı indirimi) üzerinden
+    # kargo: satırdan gelmiyor → siparişten paylaştırılmış değer
+    cargo = float(allocated_cargo or 0.0)
+
+    # Fatura %10: (satış - satıcı indirimi) üzerinden
     invoice_base = max(sale - seller_disc, 0.0)
     invoice = invoice_base * INVOICE_RATE
 
@@ -301,9 +247,6 @@ def trendyol_headers() -> tuple[str, dict]:
     return url, headers
 
 def fetch_orders(start_ms: int | None = None, end_ms: int | None = None) -> list[dict]:
-    """
-    start_ms/end_ms verilirse API'ye de filtre basar + pagination yapar.
-    """
     url, headers = trendyol_headers()
     orders: list[dict] = []
 
@@ -359,29 +302,31 @@ def env_check():
     }
 
 # =================================================
-# DEBUG (Flaş/Kampanya alanlarını görmek için)
+# DEBUG (SENİN GELEN ALANLARI GÖRMEK İÇİN)
 # =================================================
 @app.get("/debug/line-sample")
 def debug_line_sample(
     start: str = Query(..., description="YYYY-MM-DD"),
     end: str = Query(..., description="YYYY-MM-DD"),
 ):
-    """
-    Bu endpoint sana Trendyol'un döndürdüğü line objesini sample gösterir.
-    Böylece hangi indirim/kampanya alanları sende geliyor net görürüz.
-    """
     start_ms, end_ms = date_range_to_ms(start, end)
     orders = fetch_orders(start_ms=start_ms, end_ms=end_ms)
 
     for o in orders:
         lines = o.get("lines") or []
         if lines:
+            cargo_map = allocate_cargo_per_line(o)
             sample = lines[0]
-            calc = calc_profit_for_line(sample)
+            lid = sample.get("lineId") or sample.get("id")
+            allocated = cargo_map.get(int(lid), 0.0) if lid is not None else 0.0
+            calc = calc_profit_for_line(sample, allocated_cargo=allocated)
             return {
                 "orderNumber": o.get("orderNumber"),
+                "order_keys": sorted(list(o.keys())),
+                "order_cargo_total": get_order_cargo_total(o),
                 "sample_line_keys": sorted(list(sample.keys())),
                 "sample_line": sample,
+                "allocated_cargo_for_sample": round(float(allocated), 2),
                 "calculated": calc,
             }
 
@@ -413,9 +358,13 @@ def report(
             continue
 
         toplam_siparis += 1
+        cargo_map = allocate_cargo_per_line(o)
 
         for l in (o.get("lines") or []):
-            calc = calc_profit_for_line(l)
+            lid = l.get("lineId") or l.get("id")
+            allocated = cargo_map.get(int(lid), 0.0) if lid is not None else 0.0
+
+            calc = calc_profit_for_line(l, allocated_cargo=allocated)
             toplam_satis += calc["satis"]
             toplam_komisyon += calc["komisyon"]
             toplam_kargo += calc["kargo"]
@@ -450,9 +399,13 @@ def report_lines(
         if isinstance(od, int) and not (start_ms <= od <= end_ms):
             continue
 
+        cargo_map = allocate_cargo_per_line(o)
         order_no = o.get("orderNumber") or o.get("id") or ""
         for l in (o.get("lines") or []):
-            calc = calc_profit_for_line(l)
+            lid = l.get("lineId") or l.get("id")
+            allocated = cargo_map.get(int(lid), 0.0) if lid is not None else 0.0
+
+            calc = calc_profit_for_line(l, allocated_cargo=allocated)
             rows.append({
                 "Sipariş": order_no,
                 "Ürün": l.get("productName") or l.get("name") or "",
@@ -507,7 +460,7 @@ def report_excel(
     return FileResponse(tmp.name, filename=f"trendyol_kar_zarar_{start}_to_{end}.xlsx")
 
 # =================================================
-# PANEL (TARİH ARALIĞI + TABLO + EXCEL)
+# PANEL
 # =================================================
 @app.get("/panel", response_class=HTMLResponse)
 def panel(auth=Depends(panel_auth)):
@@ -522,110 +475,24 @@ def panel(auth=Depends(panel_auth)):
   <title>Trendyol Kar/Zarar Panel</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body {{
-      margin: 0;
-      font-family: Arial, sans-serif;
-      background: #f6f7fb;
-      color: #111;
-    }}
-    .wrap {{
-      max-width: 1200px;
-      margin: 28px auto;
-      padding: 0 16px;
-    }}
-    .card {{
-      background: #fff;
-      border-radius: 14px;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.07);
-      padding: 18px;
-      margin-bottom: 14px;
-    }}
-    .top {{
-      display:flex;
-      gap:12px;
-      flex-wrap:wrap;
-      align-items:end;
-    }}
-    label {{
-      font-size: 12px;
-      color: #444;
-      display:block;
-      margin-bottom:6px;
-    }}
-    input {{
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid #ddd;
-      min-width: 170px;
-      background:#fff;
-    }}
-    button, a.btn {{
-      padding: 10px 14px;
-      border-radius: 10px;
-      border: 0;
-      cursor: pointer;
-      background: #ff6f00;
-      color: #fff;
-      font-weight: 700;
-      text-decoration:none;
-      display:inline-block;
-    }}
-    button.secondary, a.btn.secondary {{
-      background: #2f3a4a;
-    }}
-    .grid {{
-      display:grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 10px;
-      margin-top: 12px;
-    }}
-    .kpi {{
-      background:#fafbff;
-      border:1px solid #eceef6;
-      border-radius: 12px;
-      padding: 12px;
-    }}
-    .kpi .t {{
-      font-size: 12px;
-      color:#555;
-      margin-bottom: 6px;
-    }}
-    .kpi .v {{
-      font-size: 18px;
-      font-weight: 800;
-    }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 12px;
-      background:#fff;
-      overflow:hidden;
-      border-radius: 12px;
-    }}
-    th, td {{
-      border-bottom: 1px solid #eee;
-      padding: 10px;
-      text-align: left;
-      font-size: 13px;
-      vertical-align: top;
-    }}
-    th {{
-      background: #fff5ec;
-      position: sticky;
-      top: 0;
-      z-index: 1;
-    }}
-    .muted {{
-      color:#666;
-      font-size: 12px;
-    }}
-    @media(max-width: 900px) {{
-      .grid {{ grid-template-columns: repeat(2, 1fr); }}
-    }}
-    @media(max-width: 560px) {{
-      .grid {{ grid-template-columns: 1fr; }}
-      input {{ min-width: 140px; }}
-    }}
+    body {{ margin:0; font-family:Arial,sans-serif; background:#f6f7fb; color:#111; }}
+    .wrap {{ max-width:1200px; margin:28px auto; padding:0 16px; }}
+    .card {{ background:#fff; border-radius:14px; box-shadow:0 10px 25px rgba(0,0,0,0.07); padding:18px; margin-bottom:14px; }}
+    .top {{ display:flex; gap:12px; flex-wrap:wrap; align-items:end; }}
+    label {{ font-size:12px; color:#444; display:block; margin-bottom:6px; }}
+    input {{ padding:10px 12px; border-radius:10px; border:1px solid #ddd; min-width:170px; background:#fff; }}
+    button, a.btn {{ padding:10px 14px; border-radius:10px; border:0; cursor:pointer; background:#ff6f00; color:#fff; font-weight:700; text-decoration:none; display:inline-block; }}
+    a.btn.secondary {{ background:#2f3a4a; }}
+    .grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:12px; }}
+    .kpi {{ background:#fafbff; border:1px solid #eceef6; border-radius:12px; padding:12px; }}
+    .kpi .t {{ font-size:12px; color:#555; margin-bottom:6px; }}
+    .kpi .v {{ font-size:18px; font-weight:800; }}
+    table {{ width:100%; border-collapse:collapse; margin-top:12px; background:#fff; border-radius:12px; overflow:hidden; }}
+    th, td {{ border-bottom:1px solid #eee; padding:10px; text-align:left; font-size:13px; vertical-align:top; }}
+    th {{ background:#fff5ec; position:sticky; top:0; z-index:1; }}
+    .muted {{ color:#666; font-size:12px; }}
+    @media(max-width:900px){{ .grid{{grid-template-columns:repeat(2,1fr);}} }}
+    @media(max-width:560px){{ .grid{{grid-template-columns:1fr;}} input{{min-width:140px;}} }}
   </style>
 </head>
 <body>
@@ -654,7 +521,7 @@ def panel(auth=Depends(panel_auth)):
     </div>
 
     <div class="card">
-      <div class="grid" id="kpis">
+      <div class="grid">
         <div class="kpi"><div class="t">Sipariş</div><div class="v" id="kpi_siparis">-</div></div>
         <div class="kpi"><div class="t">Satış Toplam</div><div class="v" id="kpi_satis">-</div></div>
         <div class="kpi"><div class="t">Toplam Kesinti</div><div class="v" id="kpi_kesinti">-</div></div>
@@ -707,14 +574,12 @@ function qs() {{
 
 function setExcelHref() {{
   const {{s, e}} = qs();
-  const link = document.getElementById('excelLink');
-  link.href = `/report/excel?start=${{encodeURIComponent(s)}}&end=${{encodeURIComponent(e)}}`;
+  document.getElementById('excelLink').href = `/report/excel?start=${{encodeURIComponent(s)}}&end=${{encodeURIComponent(e)}}`;
 }}
 
 function setDebugHref() {{
   const {{s, e}} = qs();
-  const link = document.getElementById('debugLink');
-  link.href = `/debug/line-sample?start=${{encodeURIComponent(s)}}&end=${{encodeURIComponent(e)}}`;
+  document.getElementById('debugLink').href = `/debug/line-sample?start=${{encodeURIComponent(s)}}&end=${{encodeURIComponent(e)}}`;
 }}
 
 async function loadSummary() {{
@@ -785,7 +650,6 @@ async function loadAll() {{
 setExcelHref();
 setDebugHref();
 </script>
-
 </body>
 </html>
 """
