@@ -226,3 +226,40 @@ def summary_excel_month(year: int, month: int):
     end_date = f"{year}-{month:02d}-{last_day}"
 
     return summary_excel(start=start_date, end=end_date)
+from fastapi.responses import HTMLResponse
+
+@app.get("/panel", response_class=HTMLResponse)
+def panel():
+    return """
+    <html>
+    <head>
+        <title>Trendyol Panel</title>
+        <style>
+            body { font-family: Arial; background:#f5f6fa; padding:40px; }
+            h1 { margin-bottom:20px; }
+            button {
+                padding:15px 25px;
+                margin:10px;
+                font-size:16px;
+                cursor:pointer;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>📊 Trendyol Rapor Paneli</h1>
+
+        <button onclick="window.location.href='/summary/excel/today'">
+            📥 Bugün Özet Excel
+        </button>
+
+        <button onclick="window.location.href='/orders/excel'">
+            📦 Sipariş Detay Excel
+        </button>
+
+        <button onclick="window.location.href='/summary/excel/month?year=2026&month=1'">
+            📆 Bu Ay Excel
+        </button>
+
+    </body>
+    </html>
+    """
