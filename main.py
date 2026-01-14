@@ -157,3 +157,62 @@ from datetime import datetime
 def summary_excel_today():
     today = datetime.now().strftime("%Y-%m-%d")
     return summary_excel(start=today, end=today)
+import pandas as pd
+from fastapi.responses import StreamingResponse
+from io import BytesIO
+
+@app.get("/orders/excel")
+def orders_excel():
+    import os, base64, requests
+
+    api_key = os.getenv("TRENDYOL_API_KEY")
+    api_secret = os.getenv("TRENDYOL_API_SECRET")
+    seller_id = os.getenv("TRENDYOL_SELLER_ID")
+
+    auth = f"{api_key}:{api_secret}"
+    encoded_auth = base64.b64encode(auth.encode()).decode()
+
+    url = f"https://api.trendyol.com/sapigw/suppliers/{seller_id}/orders"
+
+    headers = {
+        "Authorization": f"Basic {encoded_auth}",
+        "User-Agent": f"{seller_id} - Trendyol API"
+    }
+
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    data = r.json()
+
+    rows = []
+
+    for order in data.get("content", []):
+        order_no = order.get("orderNumber")
+        for line in order.get("lines", []):
+            price = line.get("price", 0)
+            commission = line.get("commission", 0)
+            cargo = line.get("cargoPrice", 0)
+            kdv = price * 0.10
+            net = price - commission - cargo - kdv
+
+            rows.append({
+                "Sipariş No": order_no,
+                "Ürün": line.get("productName"),
+                "Adet": line.get("quantity"),
+                "Satış Fiyatı": price,
+                "Komisyon": commission,
+                "Kargo": cargo,
+                "%10 Fatura": round(kdv, 2),
+                "Net Kâr": round(net, 2)
+            })
+
+    df = pd.DataFrame(rows)
+
+    output = BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=siparis_detay.xlsx"}
+    )
