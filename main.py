@@ -216,3 +216,13 @@ def orders_excel():
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=siparis_detay.xlsx"}
     )
+@app.get("/summary/excel/month")
+def summary_excel_month(year: int, month: int):
+    from datetime import datetime
+    import calendar
+
+    start_date = f"{year}-{month:02d}-01"
+    last_day = calendar.monthrange(year, month)[1]
+    end_date = f"{year}-{month:02d}-{last_day}"
+
+    return summary_excel(start=start_date, end=end_date)
