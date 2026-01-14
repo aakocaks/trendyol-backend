@@ -251,8 +251,9 @@ def summary_excel_month(year: int, month: int):
     return summary_excel(start=start_date, end=end_date)
 from fastapi.responses import HTMLResponse
 
-@app.get("/panel", response_class=HTMLResponse)
-def panel():
+@app.get("/panel")
+def panel(key: str):
+    check_panel_key(key)
     return """
     <html>
     <head>
@@ -260,29 +261,41 @@ def panel():
         <style>
             body { font-family: Arial; background:#f5f6fa; padding:40px; }
             h1 { margin-bottom:20px; }
-            button {
-                padding:15px 25px;
-                margin:10px;
-                font-size:16px;
-                cursor:pointer;
+            input, button {
+                padding:10px;
+                margin:8px;
+                font-size:15px;
             }
         </style>
     </head>
     <body>
         <h1>📊 Trendyol Rapor Paneli</h1>
 
-        <button onclick="window.location.href='/summary/excel/today'">
-            📥 Bugün Özet Excel
+        <h3>📅 Tarih Aralığı Özet Excel</h3>
+        <input type="date" id="start">
+        <input type="date" id="end">
+        <button onclick="downloadSummary()">📥 Özet Excel</button>
+
+        <h3>📦 Sipariş Detay</h3>
+        <button onclick="window.location.href='/orders/excel?key=""" + key + """'">
+            📥 Sipariş Detay Excel
         </button>
 
-        <button onclick="window.location.href='/orders/excel'">
-            📦 Sipariş Detay Excel
-        </button>
+        <script>
+            function downloadSummary() {
+                const start = document.getElementById('start').value;
+                const end = document.getElementById('end').value;
 
-        <button onclick="window.location.href='/summary/excel/month?year=2026&month=1'">
-            📆 Bu Ay Excel
-        </button>
+                if (!start || !end) {
+                    alert("Tarih seç kanka 🙂");
+                    return;
+                }
 
+                window.location.href =
+                    `/summary/excel?start=${start}&end=${end}&key=` + """ + key + """;
+            }
+        </script>
     </body>
     </html>
     """
+
