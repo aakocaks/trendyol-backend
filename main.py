@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 import os, base64, requests, tempfile
@@ -37,15 +37,6 @@ def root():
 def health():
     return {"status": "running"}
 
-@app.get("/env")
-def env_check():
-    return {
-        "API_KEY_SET": bool(os.getenv("TRENDYOL_API_KEY")),
-        "API_SECRET_SET": bool(os.getenv("TRENDYOL_API_SECRET")),
-        "SELLER_ID_SET": bool(os.getenv("TRENDYOL_SELLER_ID")),
-        "PANEL_AUTH_SET": bool(os.getenv("PANEL_USER") and os.getenv("PANEL_PASS"))
-    }
-
 # -------------------------------------------------
 # TRENDYOL ORDERS
 # -------------------------------------------------
@@ -67,16 +58,11 @@ def fetch_orders():
     r.raise_for_status()
     return r.json().get("content", [])
 
-@app.get("/orders")
-def orders():
-    return fetch_orders()
-
 # -------------------------------------------------
 # SUMMARY
 # -------------------------------------------------
 
-@app.get("/summary")
-def summary(start: str, end: str):
+def summary_data(start: str, end: str):
     orders = fetch_orders()
     start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
     end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp() * 1000)
@@ -96,28 +82,29 @@ def summary(start: str, end: str):
     net = ciro - komisyon - kargo - fatura
 
     return {
-        "siparis": int(siparis),
-        "ciro": round(ciro, 2),
-        "komisyon": round(komisyon, 2),
-        "kargo": round(kargo, 2),
-        "fatura_%10": round(fatura, 2),
-        "net_kar": round(net, 2)
+        "Sipariş": int(siparis),
+        "Ciro": round(ciro, 2),
+        "Komisyon": round(komisyon, 2),
+        "Kargo": round(kargo, 2),
+        "Fatura %10": round(fatura, 2),
+        "Net Kar": round(net, 2)
     }
 
 # -------------------------------------------------
-# EXCEL
+# 📊 TARİH ARALIĞI EXCEL
 # -------------------------------------------------
 
-@app.get("/summary/excel/today")
-def today_excel():
-    today = datetime.now().strftime("%Y-%m-%d")
-    return summary_excel(today, today)
+@app.get("/summary/excel")
+def summary_excel(
+    start: str = Query(..., example="2026-01-01"),
+    end: str = Query(..., example="2026-01-13")
+):
+    data = summary_data(start, end)
 
-def summary_excel(start, end):
-    data = summary(start, end)
     wb = Workbook()
     ws = wb.active
     ws.append(["Alan", "Tutar"])
+
     for k, v in data.items():
         ws.append([k, v])
 
@@ -126,93 +113,84 @@ def summary_excel(start, end):
 
     return FileResponse(tmp.name, filename="kar_zarar.xlsx")
 
-@app.get("/orders/excel")
-def orders_excel():
-    orders = fetch_orders()
-    rows = []
-
-    for o in orders:
-        for l in o["lines"]:
-            price = l.get("price", 0)
-            commission = l.get("commission", 0)
-            cargo = l.get("cargoPrice", 0)
-            kdv = price * 0.10
-            net = price - commission - cargo - kdv
-
-            rows.append({
-                "Sipariş": o.get("orderNumber"),
-                "Ürün": l.get("productName"),
-                "Fiyat": price,
-                "Komisyon": commission,
-                "Kargo": cargo,
-                "Fatura %10": kdv,
-                "Net Kar": net
-            })
-
-    df = pd.DataFrame(rows)
-    out = BytesIO()
-    df.to_excel(out, index=False)
-    out.seek(0)
-
-    return StreamingResponse(out, headers={
-        "Content-Disposition": "attachment; filename=siparisler.xlsx"
-    })
-
 # -------------------------------------------------
-# 🔐 ŞİFRELİ + GÜZEL PANEL
+# 🔐 PANEL (TARİH SEÇMELİ)
 # -------------------------------------------------
 
 @app.get("/panel", response_class=HTMLResponse)
 def panel(auth=Depends(panel_auth)):
     return """
-    <!DOCTYPE html>
-    <html lang="tr">
-    <head>
-        <meta charset="UTF-8">
-        <title>Trendyol Panel</title>
-        <style>
-            body {
-                margin: 0;
-                height: 100vh;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                background: linear-gradient(135deg, #ff6f00, #ff9800);
-                font-family: Arial, sans-serif;
-            }
-            .panel {
-                background: white;
-                padding: 30px;
-                width: 320px;
-                border-radius: 14px;
-                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-                text-align: center;
-            }
-            h1 {
-                margin-bottom: 25px;
-                color: #ff6f00;
-            }
-            a.btn {
-                display: block;
-                padding: 14px;
-                margin-top: 15px;
-                background: #ff6f00;
-                color: white;
-                text-decoration: none;
-                border-radius: 8px;
-                font-weight: bold;
-            }
-            a.btn:hover {
-                background: #e65c00;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="panel">
-            <h1>🔒 Trendyol Panel</h1>
-            <a class="btn" href="/summary/excel/today">📊 Bugün Kar / Zarar</a>
-            <a class="btn" href="/orders/excel">📦 Sipariş Excel</a>
-        </div>
-    </body>
-    </html>
-    """
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Trendyol Panel</title>
+<style>
+body {
+    margin:0;
+    height:100vh;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    background:linear-gradient(135deg,#ff6f00,#ff9800);
+    font-family:Arial;
+}
+.panel {
+    background:white;
+    padding:30px;
+    width:340px;
+    border-radius:14px;
+    box-shadow:0 10px 25px rgba(0,0,0,0.2);
+}
+h1 {
+    text-align:center;
+    color:#ff6f00;
+}
+label {
+    font-weight:bold;
+}
+input, button {
+    width:100%;
+    padding:10px;
+    margin-top:8px;
+}
+button {
+    background:#ff6f00;
+    color:white;
+    border:none;
+    border-radius:6px;
+    font-size:16px;
+    cursor:pointer;
+}
+button:hover {
+    background:#e65c00;
+}
+</style>
+</head>
+<body>
+<div class="panel">
+<h1>📊 Trendyol Panel</h1>
+
+<label>Başlangıç Tarihi</label>
+<input type="date" id="start">
+
+<label>Bitiş Tarihi</label>
+<input type="date" id="end">
+
+<button onclick="indir()">Excel İndir</button>
+
+<script>
+function indir() {
+    const s = document.getElementById("start").value;
+    const e = document.getElementById("end").value;
+    if(!s || !e){
+        alert("Tarih seç!");
+        return;
+    }
+    window.location = `/summary/excel?start=${s}&end=${e}`;
+}
+</script>
+</div>
+</body>
+</html>
+"""
