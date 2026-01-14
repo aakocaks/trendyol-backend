@@ -159,15 +159,60 @@ def orders_excel():
     })
 
 # -------------------------------------------------
-# 🔐 ŞİFRELİ PANEL
+# 🔐 ŞİFRELİ + GÜZEL PANEL
 # -------------------------------------------------
 
 @app.get("/panel", response_class=HTMLResponse)
 def panel(auth=Depends(panel_auth)):
     return """
-    <h1>🔐 Trendyol Panel</h1>
-    <ul>
-        <li><a href="/summary/excel/today">📊 Bugün Kar/Zarar</a></li>
-        <li><a href="/orders/excel">📦 Sipariş Excel</a></li>
-    </ul>
+    <!DOCTYPE html>
+    <html lang="tr">
+    <head>
+        <meta charset="UTF-8">
+        <title>Trendyol Panel</title>
+        <style>
+            body {
+                margin: 0;
+                height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                background: linear-gradient(135deg, #ff6f00, #ff9800);
+                font-family: Arial, sans-serif;
+            }
+            .panel {
+                background: white;
+                padding: 30px;
+                width: 320px;
+                border-radius: 14px;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+                text-align: center;
+            }
+            h1 {
+                margin-bottom: 25px;
+                color: #ff6f00;
+            }
+            a.btn {
+                display: block;
+                padding: 14px;
+                margin-top: 15px;
+                background: #ff6f00;
+                color: white;
+                text-decoration: none;
+                border-radius: 8px;
+                font-weight: bold;
+            }
+            a.btn:hover {
+                background: #e65c00;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="panel">
+            <h1>🔒 Trendyol Panel</h1>
+            <a class="btn" href="/summary/excel/today">📊 Bugün Kar / Zarar</a>
+            <a class="btn" href="/orders/excel">📦 Sipariş Excel</a>
+        </div>
+    </body>
+    </html>
     """
