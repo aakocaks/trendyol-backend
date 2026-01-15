@@ -5,29 +5,20 @@ from fastapi.responses import FileResponse, HTMLResponse
 import os, base64, requests, tempfile
 from datetime import datetime, date, timedelta
 from openpyxl import Workbook
-from typing import Any
 
 app = FastAPI(title="Trendyol Kar/Zarar Paneli")
 security = HTTPBasic()
 
-# =================================================
-# AYARLAR
-# =================================================
 INVOICE_RATE = float(os.getenv("INVOICE_RATE", "0.10"))
 PAGE_SIZE = int(os.getenv("TRENDYOL_PAGE_SIZE", "200"))
 
-# Finance base (PROD için çoğunlukla api.trendyol.com; sen dokümanda stageapigw görmüşsün)
-TRENDYOL_FINANCE_BASE = os.getenv("TRENDYOL_FINANCE_BASE", "https://api.trendyol.com")
-# virgülle seri numarası: ABC123,DEF456 gibi
+TRENDYOL_FINANCE_BASE = os.getenv("TRENDYOL_FINANCE_BASE", "https://api.trendyol.com").rstrip("/")
 CARGO_INVOICE_SERIALS = os.getenv("CARGO_INVOICE_SERIALS", "").strip()
 
-# =================================================
-# PANEL AUTH
-# =================================================
+# ---------------- AUTH ----------------
 def panel_auth(credentials: HTTPBasicCredentials = Depends(security)):
     user = os.getenv("PANEL_USER")
     password = os.getenv("PANEL_PASS")
-
     if not user or not password:
         raise HTTPException(status_code=500, detail="PANEL_USER / PANEL_PASS env eksik")
 
@@ -37,19 +28,6 @@ def panel_auth(credentials: HTTPBasicCredentials = Depends(security)):
             detail="Yetkisiz",
             headers={"WWW-Authenticate": "Basic"},
         )
-
-# =================================================
-# HELPERS
-# =================================================
-def _ms(dt: datetime) -> int:
-    return int(dt.timestamp() * 1000)
-
-def date_range_to_ms(start_str: str, end_str: str) -> tuple[int, int]:
-    s = datetime.strptime(start_str, "%Y-%m-%d")
-    e = datetime.strptime(end_str, "%Y-%m-%d")
-    start_dt = datetime(s.year, s.month, s.day, 0, 0, 0)
-    end_dt = datetime(e.year, e.month, e.day, 23, 59, 59, 999000)
-    return _ms(start_dt), _ms(end_dt)
 
 def _num(x, default=0.0) -> float:
     try:
@@ -65,6 +43,16 @@ def pick(d: dict, keys: list[str], default=0.0) -> float:
             return _num(d.get(k), default)
     return _num(default)
 
+def _ms(dt: datetime) -> int:
+    return int(dt.timestamp() * 1000)
+
+def date_range_to_ms(start_str: str, end_str: str) -> tuple[int, int]:
+    s = datetime.strptime(start_str, "%Y-%m-%d")
+    e = datetime.strptime(end_str, "%Y-%m-%d")
+    start_dt = datetime(s.year, s.month, s.day, 0, 0, 0)
+    end_dt = datetime(e.year, e.month, e.day, 23, 59, 59, 999000)
+    return _ms(start_dt), _ms(end_dt)
+
 def get_qty(line: dict) -> float:
     return pick(line, ["quantity", "qty", "amount", "count"], default=1.0) or 1.0
 
@@ -78,13 +66,9 @@ def get_sale_price(line: dict) -> float:
 def get_commission(line: dict) -> float:
     return pick(line, ["commission", "commissionAmount", "tyCommissionAmount", "commissionTotal"], default=0.0)
 
-# =================================================
-# İNDİRİM / KAMPANYA (SENİN GELEN ALANLAR)
-# =================================================
 def parse_discounts(line: dict) -> tuple[float, float]:
     seller = pick(line, ["lineSellerDiscount", "sellerDiscountAmount", "sellerDiscount"], default=0.0)
     ty = pick(line, ["lineTyDiscount", "tyDiscount", "tyDiscountAmount"], default=0.0)
-
     details = line.get("discountDetails")
     if isinstance(details, list):
         for obj in details:
@@ -92,7 +76,6 @@ def parse_discounts(line: dict) -> tuple[float, float]:
                 continue
             seller += pick(obj, ["lineItemSellerDiscount"], default=0.0)
             ty += pick(obj, ["lineItemTyDiscount"], default=0.0)
-
     return float(seller), float(ty)
 
 def get_campaign_label(line: dict) -> str:
@@ -101,14 +84,11 @@ def get_campaign_label(line: dict) -> str:
         return f"salesCampaignId:{scid}"
     return ""
 
-# =================================================
-# AUTH HEADERS (Sipariş + Finance ikisi de Basic auth)
-# =================================================
-def trendyol_basic_headers() -> tuple[str, dict, str]:
+# ---------------- Trendyol headers ----------------
+def trendyol_basic_headers() -> tuple[str, dict]:
     api_key = os.getenv("TRENDYOL_API_KEY")
     api_secret = os.getenv("TRENDYOL_API_SECRET")
     seller_id = os.getenv("TRENDYOL_SELLER_ID")
-
     if not api_key or not api_secret or not seller_id:
         raise HTTPException(status_code=500, detail="TRENDYOL_API_KEY/SECRET/SELLER_ID env eksik")
 
@@ -117,13 +97,11 @@ def trendyol_basic_headers() -> tuple[str, dict, str]:
         "Authorization": f"Basic {auth}",
         "User-Agent": f"{seller_id} - Trendyol API",
     }
-    return seller_id, headers, auth
+    return seller_id, headers
 
-# =================================================
-# ORDERS
-# =================================================
+# ---------------- Orders ----------------
 def fetch_orders(start_ms: int | None = None, end_ms: int | None = None) -> list[dict]:
-    seller_id, headers, _ = trendyol_basic_headers()
+    seller_id, headers = trendyol_basic_headers()
     url = f"https://api.trendyol.com/sapigw/suppliers/{seller_id}/orders"
 
     orders: list[dict] = []
@@ -156,30 +134,24 @@ def fetch_orders(start_ms: int | None = None, end_ms: int | None = None) -> list
 
     return orders
 
-# =================================================
-# FINANCE: CARGO INVOICE ITEMS
-# Endpoint (dokümandaki):
-# /integration/finance/che/sellers/{sellerId}/cargo-invoice/{invoiceSerialNumber}/items
-# =================================================
+# ---------------- Finance: Cargo Invoice Items ----------------
 def finance_cargo_invoice_items(invoice_serial: str, page: int = 0, size: int = 500) -> dict:
-    seller_id, headers, _ = trendyol_basic_headers()
-
-    base = TRENDYOL_FINANCE_BASE.rstrip("/")
-    url = f"{base}/integration/finance/che/sellers/{seller_id}/cargo-invoice/{invoice_serial}/items"
+    seller_id, headers = trendyol_basic_headers()
+    url = f"{TRENDYOL_FINANCE_BASE}/integration/finance/che/sellers/{seller_id}/cargo-invoice/{invoice_serial}/items"
     params = {"page": page, "size": size}
-
     r = requests.get(url, headers=headers, params=params, timeout=60)
     if r.status_code >= 400:
         raise HTTPException(status_code=502, detail=f"Trendyol Finance cargo-invoice hata: {r.status_code} - {r.text}")
     return r.json() or {}
 
-def build_cargo_map_from_invoices(invoice_serials: list[str]) -> dict[str, float]:
+def build_cargo_maps(invoice_serials: list[str]) -> tuple[dict[str, float], dict[str, float]]:
     """
-    Dönüş: {orderNumber: toplam_kargo_tutari}
-    amount => kargo bedeli
-    shipmentPackageType => 'Gönderi Kargo Bedeli' / 'İade Kargo Bedeli' vb.
+    Dönüş:
+      cargo_by_orderNumber: {orderNumber: total_amount}
+      cargo_by_parcelUniqueId: {parcelUniqueId: total_amount}
     """
     cargo_by_order: dict[str, float] = {}
+    cargo_by_parcel: dict[str, float] = {}
 
     for serial in invoice_serials:
         serial = serial.strip()
@@ -190,26 +162,25 @@ def build_cargo_map_from_invoices(invoice_serials: list[str]) -> dict[str, float
         while True:
             data = finance_cargo_invoice_items(serial, page=page, size=500)
             content = data.get("content") or []
+
             for it in content:
                 if not isinstance(it, dict):
                     continue
-                order_no = str(it.get("orderNumber") or "").strip()
                 amt = _num(it.get("amount"), 0.0)
 
-                # order yoksa geç
-                if not order_no:
-                    continue
+                order_no = str(it.get("orderNumber") or "").strip()
+                parcel_id = str(it.get("parcelUniqueId") or "").strip()
 
-                # burada istersen tip filtresi koyabiliriz:
-                # gönderi + iade ikisini de maliyete yazıyorum (ikisi de cebinden çıkar)
-                cargo_by_order[order_no] = cargo_by_order.get(order_no, 0.0) + amt
+                if order_no:
+                    cargo_by_order[order_no] = cargo_by_order.get(order_no, 0.0) + amt
+                if parcel_id:
+                    cargo_by_parcel[parcel_id] = cargo_by_parcel.get(parcel_id, 0.0) + amt
 
             total_pages = data.get("totalPages")
             if isinstance(total_pages, int):
                 if page >= (total_pages - 1):
                     break
             else:
-                # totalPages yoksa içerik bitince çık
                 if not content:
                     break
 
@@ -217,13 +188,67 @@ def build_cargo_map_from_invoices(invoice_serials: list[str]) -> dict[str, float
             if page > 200:
                 break
 
-    return cargo_by_order
+    return cargo_by_order, cargo_by_parcel
+
+def order_package_ids(order: dict) -> list[str]:
+    """
+    Order içinden paket kimliklerini topla:
+      - shipmentPackageId
+      - originPackageIds (liste)
+      - parcelUniqueId alanı yok genelde, ama olursa eklenir
+    """
+    ids: list[str] = []
+    spid = order.get("shipmentPackageId")
+    if spid is not None and str(spid).strip():
+        ids.append(str(spid).strip())
+
+    opids = order.get("originPackageIds")
+    if isinstance(opids, list):
+        for x in opids:
+            if x is None:
+                continue
+            sx = str(x).strip()
+            if sx:
+                ids.append(sx)
+
+    # bazı payloadlarda farklı isimle gelebilir
+    for k in ["parcelUniqueId", "packageId", "shipmentId"]:
+        v = order.get(k)
+        if v is not None and str(v).strip():
+            ids.append(str(v).strip())
+
+    # unique
+    out = []
+    seen = set()
+    for x in ids:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+def resolve_order_cargo_total(order: dict, cargo_by_order: dict[str, float], cargo_by_parcel: dict[str, float]) -> float:
+    """
+    Önce parcelUniqueId/shipmentPackageId eşleştir, olmazsa orderNumber ile dene.
+    """
+    # 1) paket id üzerinden
+    for pid in order_package_ids(order):
+        if pid in cargo_by_parcel:
+            return float(cargo_by_parcel.get(pid, 0.0))
+
+    # 2) orderNumber fallback
+    ono = str(order.get("orderNumber") or "").strip()
+    if ono and ono in cargo_by_order:
+        return float(cargo_by_order.get(ono, 0.0))
+
+    # bazen orderNumber farklı format olabiliyor: soldan 0 sil
+    if ono:
+        ono2 = ono.lstrip("0")
+        if ono2 in cargo_by_order:
+            return float(cargo_by_order.get(ono2, 0.0))
+
+    return 0.0
 
 def allocate_cargo_per_line(order: dict, cargo_total_for_order: float) -> dict[int, float]:
-    """
-    Kargo toplamını satır satış tutarına göre paylaştırır.
-    Dönüş: {lineId: allocated_cargo}
-    """
     lines = order.get("lines") or []
     if not cargo_total_for_order or not lines:
         return {}
@@ -253,16 +278,11 @@ def allocate_cargo_per_line(order: dict, cargo_total_for_order: float) -> dict[i
         if lid is None:
             continue
         out[int(lid)] = float(cargo_total_for_order) * (w / sum_w)
-
     return out
 
-# =================================================
-# PROFIT CALC
-# =================================================
+# ---------------- Profit calc ----------------
 def calc_profit_for_line(line: dict, allocated_cargo: float = 0.0) -> dict:
-    qty = get_qty(line)
     sale = get_sale_price(line)
-
     commission = get_commission(line)
     seller_disc, ty_disc = parse_discounts(line)
     cargo = float(allocated_cargo or 0.0)
@@ -275,7 +295,6 @@ def calc_profit_for_line(line: dict, allocated_cargo: float = 0.0) -> dict:
 
     return {
         "kampanya": get_campaign_label(line),
-        "adet": qty,
         "satis": round(sale, 2),
         "komisyon": round(commission, 2),
         "kargo": round(cargo, 2),
@@ -286,9 +305,7 @@ def calc_profit_for_line(line: dict, allocated_cargo: float = 0.0) -> dict:
         "net_kar": round(net_profit, 2),
     }
 
-# =================================================
-# ENDPOINTS - BASIC
-# =================================================
+# ---------------- Endpoints ----------------
 @app.get("/")
 def root():
     return {"ok": True}
@@ -310,37 +327,31 @@ def env_check():
         "CARGO_INVOICE_SERIALS_SET": bool(CARGO_INVOICE_SERIALS),
     }
 
-# =================================================
-# DEBUG: Finance cargo invoice items
-# =================================================
 @app.get("/debug/cargo-invoice/items")
 def debug_cargo_invoice_items(serial: str):
     return finance_cargo_invoice_items(serial, page=0, size=500)
 
 @app.get("/debug/cargo-map")
-def debug_cargo_map(serials: str = Query(..., description="Virgülle: SERI1,SERI2")):
+def debug_cargo_map(serials: str = Query(..., description="SERI1,SERI2")):
     invs = [x.strip() for x in serials.split(",") if x.strip()]
-    return build_cargo_map_from_invoices(invs)
+    by_order, by_parcel = build_cargo_maps(invs)
+    return {"by_orderNumber": by_order, "by_parcelUniqueId": by_parcel}
 
-# =================================================
-# DEBUG: Order + line sample (cargo dahil)
-# =================================================
 @app.get("/debug/line-sample")
 def debug_line_sample(start: str = Query(...), end: str = Query(...)):
     start_ms, end_ms = date_range_to_ms(start, end)
     orders = fetch_orders(start_ms=start_ms, end_ms=end_ms)
 
     invoice_serials = [x.strip() for x in CARGO_INVOICE_SERIALS.split(",") if x.strip()]
-    cargo_map = build_cargo_map_from_invoices(invoice_serials) if invoice_serials else {}
+    cargo_by_order, cargo_by_parcel = build_cargo_maps(invoice_serials) if invoice_serials else ({}, {})
 
     for o in orders:
         lines = o.get("lines") or []
         if not lines:
             continue
 
-        order_no = str(o.get("orderNumber") or "").strip()
-        cargo_total = float(cargo_map.get(order_no, 0.0))
-        alloc_map = allocate_cargo_per_line(o, cargo_total_for_order=cargo_total)
+        cargo_total = resolve_order_cargo_total(o, cargo_by_order, cargo_by_parcel)
+        alloc_map = allocate_cargo_per_line(o, cargo_total)
 
         sample = lines[0]
         lid = sample.get("lineId") or sample.get("id")
@@ -348,64 +359,60 @@ def debug_line_sample(start: str = Query(...), end: str = Query(...)):
 
         return {
             "orderNumber": o.get("orderNumber"),
+            "shipmentPackageId": o.get("shipmentPackageId"),
+            "originPackageIds": o.get("originPackageIds"),
             "order_cargo_total_from_finance": round(cargo_total, 2),
             "allocated_cargo_for_sample": round(float(allocated), 2),
-            "sample_line_keys": sorted(list(sample.keys())),
             "calculated": calc_profit_for_line(sample, allocated_cargo=allocated),
         }
 
     return {"message": "Bu tarih aralığında sample bulunamadı."}
 
-# =================================================
-# REPORT (JSON)
-# =================================================
 @app.get("/report")
 def report(start: str = Query(...), end: str = Query(...)):
     start_ms, end_ms = date_range_to_ms(start, end)
     orders = fetch_orders(start_ms=start_ms, end_ms=end_ms)
 
     invoice_serials = [x.strip() for x in CARGO_INVOICE_SERIALS.split(",") if x.strip()]
-    cargo_map = build_cargo_map_from_invoices(invoice_serials) if invoice_serials else {}
+    cargo_by_order, cargo_by_parcel = build_cargo_maps(invoice_serials) if invoice_serials else ({}, {})
 
-    toplam_siparis = 0
-    toplam_satis = toplam_komisyon = toplam_kargo = 0.0
-    toplam_satici_indirim = toplam_trendyol_indirim = 0.0
-    toplam_fatura = toplam_net = 0.0
+    siparis = 0
+    satis = komisyon = kargo = satici_ind = ty_ind = fatura = net = kesinti = 0.0
 
     for o in orders:
         od = o.get("orderDate")
         if isinstance(od, int) and not (start_ms <= od <= end_ms):
             continue
 
-        toplam_siparis += 1
-        order_no = str(o.get("orderNumber") or "").strip()
-        cargo_total = float(cargo_map.get(order_no, 0.0))
-        alloc_map = allocate_cargo_per_line(o, cargo_total_for_order=cargo_total)
+        siparis += 1
+        cargo_total = resolve_order_cargo_total(o, cargo_by_order, cargo_by_parcel)
+        alloc_map = allocate_cargo_per_line(o, cargo_total)
 
         for l in (o.get("lines") or []):
             lid = l.get("lineId") or l.get("id")
             allocated = alloc_map.get(int(lid), 0.0) if lid is not None else 0.0
+            c = calc_profit_for_line(l, allocated_cargo=allocated)
 
-            calc = calc_profit_for_line(l, allocated_cargo=allocated)
-            toplam_satis += calc["satis"]
-            toplam_komisyon += calc["komisyon"]
-            toplam_kargo += calc["kargo"]
-            toplam_satici_indirim += calc["satici_indirim"]
-            toplam_trendyol_indirim += calc["trendyol_indirim"]
-            toplam_fatura += calc.get(f"fatura_%{int(INVOICE_RATE*100)}", 0.0)
-            toplam_net += calc["net_kar"]
+            satis += c["satis"]
+            komisyon += c["komisyon"]
+            kargo += c["kargo"]
+            satici_ind += c["satici_indirim"]
+            ty_ind += c["trendyol_indirim"]
+            fatura += c.get(f"fatura_%{int(INVOICE_RATE*100)}", 0.0)
+            net += c["net_kar"]
+            kesinti += c["toplam_kesinti"]
 
     return {
         "tarih": {"start": start, "end": end},
-        "siparis": int(toplam_siparis),
-        "satis_toplam": round(toplam_satis, 2),
-        "komisyon_toplam": round(toplam_komisyon, 2),
-        "kargo_toplam": round(toplam_kargo, 2),
-        "satici_indirim_toplam": round(toplam_satici_indirim, 2),
-        "trendyol_indirim_toplam": round(toplam_trendyol_indirim, 2),
-        f"fatura_%{int(INVOICE_RATE*100)}_toplam": round(toplam_fatura, 2),
-        "net_kar_toplam": round(toplam_net, 2),
-        "cargo_invoice_serials_used": invoice_serials,
+        "siparis": int(siparis),
+        "satis_toplam": round(satis, 2),
+        "komisyon_toplam": round(komisyon, 2),
+        "kargo_toplam": round(kargo, 2),
+        "satici_indirim_toplam": round(satici_ind, 2),
+        "trendyol_indirim_toplam": round(ty_ind, 2),
+        f"fatura_%{int(INVOICE_RATE*100)}_toplam": round(fatura, 2),
+        "toplam_kesinti_toplam": round(kesinti, 2),
+        "net_kar_toplam": round(net, 2),
     }
 
 @app.get("/report/lines")
@@ -414,7 +421,7 @@ def report_lines(start: str = Query(...), end: str = Query(...)):
     orders = fetch_orders(start_ms=start_ms, end_ms=end_ms)
 
     invoice_serials = [x.strip() for x in CARGO_INVOICE_SERIALS.split(",") if x.strip()]
-    cargo_map = build_cargo_map_from_invoices(invoice_serials) if invoice_serials else {}
+    cargo_by_order, cargo_by_parcel = build_cargo_maps(invoice_serials) if invoice_serials else ({}, {})
 
     rows = []
     for o in orders:
@@ -422,34 +429,31 @@ def report_lines(start: str = Query(...), end: str = Query(...)):
         if isinstance(od, int) and not (start_ms <= od <= end_ms):
             continue
 
-        order_no = str(o.get("orderNumber") or "").strip()
-        cargo_total = float(cargo_map.get(order_no, 0.0))
-        alloc_map = allocate_cargo_per_line(o, cargo_total_for_order=cargo_total)
+        cargo_total = resolve_order_cargo_total(o, cargo_by_order, cargo_by_parcel)
+        alloc_map = allocate_cargo_per_line(o, cargo_total)
 
+        order_no = str(o.get("orderNumber") or "").strip()
         for l in (o.get("lines") or []):
             lid = l.get("lineId") or l.get("id")
             allocated = alloc_map.get(int(lid), 0.0) if lid is not None else 0.0
-            calc = calc_profit_for_line(l, allocated_cargo=allocated)
+            c = calc_profit_for_line(l, allocated_cargo=allocated)
 
             rows.append({
                 "Sipariş": order_no,
                 "Ürün": l.get("productName") or "",
                 "Barkod/SKU": l.get("barcode") or l.get("merchantSku") or "",
-                "Kampanya": calc["kampanya"],
-                "Satış": calc["satis"],
-                "Komisyon": calc["komisyon"],
-                "Kargo": calc["kargo"],
-                "Satıcı İndirim": calc["satici_indirim"],
-                "Trendyol İndirim": calc["trendyol_indirim"],
-                f"Fatura %{int(INVOICE_RATE*100)}": calc.get(f"fatura_%{int(INVOICE_RATE*100)}", 0.0),
-                "Net Kâr": calc["net_kar"],
+                "Kampanya": c["kampanya"],
+                "Satış": c["satis"],
+                "Komisyon": c["komisyon"],
+                "Kargo": c["kargo"],
+                "Satıcı İndirim": c["satici_indirim"],
+                "Trendyol İndirim": c["trendyol_indirim"],
+                f"Fatura %{int(INVOICE_RATE*100)}": c.get(f"fatura_%{int(INVOICE_RATE*100)}", 0.0),
+                "Net Kâr": c["net_kar"],
             })
 
     return {"tarih": {"start": start, "end": end}, "adet": len(rows), "rows": rows}
 
-# =================================================
-# EXCEL
-# =================================================
 @app.get("/report/excel")
 def report_excel(start: str = Query(...), end: str = Query(...)):
     data = report_lines(start, end)
@@ -480,9 +484,6 @@ def report_excel(start: str = Query(...), end: str = Query(...)):
     wb.save(tmp.name)
     return FileResponse(tmp.name, filename=f"trendyol_kar_zarar_{start}_to_{end}.xlsx")
 
-# =================================================
-# PANEL
-# =================================================
 @app.get("/panel", response_class=HTMLResponse)
 def panel(auth=Depends(panel_auth)):
     today = date.today()
@@ -510,18 +511,15 @@ def panel(auth=Depends(panel_auth)):
     .kpi .v {{ font-size:18px; font-weight:800; }}
     table {{ width:100%; border-collapse:collapse; margin-top:12px; background:#fff; border-radius:12px; overflow:hidden; }}
     th, td {{ border-bottom:1px solid #eee; padding:10px; text-align:left; font-size:13px; vertical-align:top; }}
-    th {{ background:#fff5ec; position:sticky; top:0; z-index:1; }}
+    th {{ background: #fff5ec; position:sticky; top:0; z-index:1; }}
     .muted {{ color:#666; font-size:12px; }}
-    @media(max-width:900px){{ .grid{{grid-template-columns:repeat(2,1fr);}} }}
-    @media(max-width:560px){{ .grid{{grid-template-columns:1fr;}} input{{min-width:140px;}} }}
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <h2 style="margin:0 0 10px 0;">📊 Trendyol Kar/Zarar</h2>
-      <div class="muted">Kargo faturaları için env: <b>CARGO_INVOICE_SERIALS</b> (virgülle seri no)</div>
-      <div class="top" style="margin-top:10px;">
+      <div class="top">
         <div>
           <label>Başlangıç</label>
           <input id="start" type="date" value="{week_ago.isoformat()}">
@@ -537,7 +535,7 @@ def panel(auth=Depends(panel_auth)):
         </div>
       </div>
       <div class="muted" style="margin-top:10px;">
-        Hesap: Satış - (Komisyon + Kargo + Satıcı İndirim + Fatura %{int(INVOICE_RATE*100)}). Trendyol indirimini ayrıca gösteriyoruz.
+        Hesap: Satış - (Komisyon + Kargo + Satıcı İndirim + Fatura %{int(INVOICE_RATE*100)}).
       </div>
     </div>
 
@@ -582,9 +580,7 @@ function money(x) {{
   try {{
     const n = Number(x || 0);
     return n.toLocaleString('tr-TR', {{minimumFractionDigits:2, maximumFractionDigits:2}});
-  }} catch(e) {{
-    return x;
-  }}
+  }} catch(e) {{ return x; }}
 }}
 
 function qs() {{
@@ -610,14 +606,7 @@ async function loadSummary() {{
 
   document.getElementById('kpi_siparis').innerText = data.siparis ?? '-';
   document.getElementById('kpi_satis').innerText = money(data.satis_toplam);
-
-  const kesinti =
-    (data.komisyon_toplam || 0) +
-    (data.kargo_toplam || 0) +
-    (data.satici_indirim_toplam || 0) +
-    (data['fatura_%{int(INVOICE_RATE*100)}_toplam'] || 0);
-
-  document.getElementById('kpi_kesinti').innerText = money(kesinti);
+  document.getElementById('kpi_kesinti').innerText = money(data.toplam_kesinti_toplam);
   document.getElementById('kpi_net').innerText = money(data.net_kar_toplam);
 }}
 
@@ -627,7 +616,6 @@ async function loadLines() {{
   const data = await res.json();
 
   document.getElementById('lineCount').innerText = data.adet ?? 0;
-
   const tb = document.getElementById('tbody');
   tb.innerHTML = '';
 
