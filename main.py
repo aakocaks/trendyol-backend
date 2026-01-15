@@ -6,10 +6,10 @@ from datetime import datetime, date, timedelta
 from openpyxl import Workbook
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-from typing import Any, Optional
+from typing import Optional
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-app = FastAPI(title="Trendyol Kar/Zarar + e-Arşiv Taslak")
+app = FastAPI(title="Trendyol Kar/Zarar + e-Arşiv Taslak (Sağlam)")
 
 security = HTTPBasic()
 
@@ -19,9 +19,10 @@ security = HTTPBasic()
 INVOICE_RATE = float(os.getenv("INVOICE_RATE", "0.10"))
 PAGE_SIZE = int(os.getenv("TRENDYOL_PAGE_SIZE", "200"))
 
-DB_PATH = os.getenv("DB_PATH", "data.db")
+# Render güvenli yazma yolu: env yoksa otomatik /tmp kullan
+DB_PATH = os.getenv("DB_PATH", "/tmp/data.db")
 
-# Satıcı bilgileri (Portal için şart)
+# Satıcı bilgileri (Portal için)
 SELLER_TITLE = os.getenv("SELLER_TITLE", "UNVANINIZ")
 SELLER_VKN = os.getenv("SELLER_VKN", "0000000000")
 SELLER_TAX_OFFICE = os.getenv("SELLER_TAX_OFFICE", "VERGI_DAIRESI")
@@ -88,6 +89,10 @@ def init_db():
             vat_rate REAL,
             FOREIGN KEY(invoice_id) REFERENCES invoices(id)
         )
+    """)
+    # aynı siparişe birden fazla taslak açılmasın diye index
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_invoices_order_number ON invoices(order_number)
     """)
     conn.commit()
     conn.close()
@@ -171,7 +176,15 @@ def trendyol_headers() -> tuple[str, dict]:
     }
     return url, headers
 
-def fetch_orders(start_ms: int | None = None, end_ms: int | None = None) -> list[dict]:
+def fetch_orders(
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    order_number: str | None = None,
+    max_pages: int = 300
+) -> list[dict]:
+    """
+    Sağlam sayfalama + opsiyonel orderNumber filtresi.
+    """
     url, headers = trendyol_headers()
     orders: list[dict] = []
 
@@ -182,6 +195,8 @@ def fetch_orders(start_ms: int | None = None, end_ms: int | None = None) -> list
             params["startDate"] = start_ms
         if end_ms is not None:
             params["endDate"] = end_ms
+        if order_number:
+            params["orderNumber"] = str(order_number).strip()
 
         r = requests.get(url, headers=headers, params=params, timeout=60)
         if r.status_code >= 400:
@@ -199,24 +214,40 @@ def fetch_orders(start_ms: int | None = None, end_ms: int | None = None) -> list
             break
 
         page += 1
-        if page > 200:
+        if page >= max_pages:
             break
 
     return orders
 
 def find_order_by_number(order_number: str) -> Optional[dict]:
-    # Trendyol orderNumber ile arama için doğrudan filter yok; bu yüzden yakın tarih aralığı daha iyi.
-    # Burada pratik: son 90 gün çekip bulalım.
-    end = datetime.now()
-    start = end - timedelta(days=90)
-    orders = fetch_orders(start_ms=_ms(start), end_ms=_ms(end))
+    """
+    1) Önce orderNumber filtresiyle hızlı dene (180 gün)
+    2) Olmazsa 365 gün geniş aralık brute-force (limitli sayfalama)
+    """
+    order_number = str(order_number).strip()
+    if not order_number:
+        return None
+
+    now = datetime.now()
+
+    # 1) hızlı deneme: orderNumber filtresi + 180 gün
+    start = now - timedelta(days=180)
+    orders = fetch_orders(start_ms=_ms(start), end_ms=_ms(now), order_number=order_number, max_pages=30)
     for o in orders:
-        if str(o.get("orderNumber") or "").strip() == str(order_number).strip():
+        if str(o.get("orderNumber") or "").strip() == order_number:
             return o
+
+    # 2) geniş aralık: 365 gün (filter yoksa yakalasın diye)
+    start2 = now - timedelta(days=365)
+    orders2 = fetch_orders(start_ms=_ms(start2), end_ms=_ms(now), order_number=None, max_pages=300)
+    for o in orders2:
+        if str(o.get("orderNumber") or "").strip() == order_number:
+            return o
+
     return None
 
 # =========================
-# KAR HESABI
+# KAR/ZARAR
 # =========================
 def calc_profit_for_line(line: dict) -> dict:
     sale = get_sale_price(line)
@@ -243,7 +274,7 @@ def calc_profit_for_line(line: dict) -> dict:
     }
 
 # =========================
-# E-ARŞİV TASLAK OLUŞTURMA
+# E-ARŞİV TASLAK
 # =========================
 def extract_customer_from_order(order: dict) -> dict:
     inv = order.get("invoiceAddress") or {}
@@ -252,30 +283,44 @@ def extract_customer_from_order(order: dict) -> dict:
     addr = (inv.get("fullAddress") or inv.get("address") or "").strip()
     city = (inv.get("city") or "").strip()
     district = (inv.get("district") or inv.get("town") or "").strip()
+    fallback_name = (str(order.get("customerFirstName") or "") + " " + str(order.get("customerLastName") or "")).strip()
+
     return {
-        "name": name or (order.get("customerFirstName","") + " " + order.get("customerLastName","")).strip(),
+        "name": name or fallback_name,
         "vkn_tckn": vkn,
         "address": addr,
         "city": city,
         "district": district,
     }
 
+def get_existing_invoice_id_by_order(order_no: str) -> Optional[int]:
+    conn = db()
+    row = conn.execute("SELECT id FROM invoices WHERE order_number=? ORDER BY id DESC LIMIT 1", (order_no,)).fetchone()
+    conn.close()
+    if row:
+        return int(row["id"])
+    return None
+
 def create_invoice_draft_from_order(order: dict) -> int:
     order_no = str(order.get("orderNumber") or "").strip()
     if not order_no:
         raise HTTPException(400, "Sipariş numarası bulunamadı.")
+
+    # ✅ aynı siparişe tekrar taslak açmayı engelle
+    existing = get_existing_invoice_id_by_order(order_no)
+    if existing:
+        return existing
 
     customer = extract_customer_from_order(order)
     lines = order.get("lines") or []
     if not lines:
         raise HTTPException(400, "Sipariş satırı yok.")
 
-    # Satırları fatura satırı gibi yazacağız (KDV %10)
     subtotal = 0.0
     invoice_lines = []
     for l in lines:
         qty = _num(l.get("quantity"), 1.0) or 1.0
-        line_total = get_sale_price(l)  # Trendyol satış tutarı
+        line_total = get_sale_price(l)
         unit_price = (line_total / qty) if qty else line_total
         subtotal += line_total
         invoice_lines.append({
@@ -329,25 +374,14 @@ def get_invoice(invoice_id: int) -> dict:
         raise HTTPException(404, "Fatura bulunamadı.")
     lines = cur.execute("SELECT * FROM invoice_lines WHERE invoice_id=? ORDER BY id", (invoice_id,)).fetchall()
     conn.close()
-    return {
-        "invoice": dict(inv),
-        "lines": [dict(x) for x in lines]
-    }
+    return {"invoice": dict(inv), "lines": [dict(x) for x in lines]}
 
-# =========================
-# UBL-TR (Basit Taslak XML)
-# =========================
 def build_basic_ubl_xml(inv: dict, lines: list[dict]) -> bytes:
-    """
-    Bu, portal için 'taslak' UBL üretmek amacıyla basit bir şablon.
-    Portal bazı alanları zorunlu isteyebilir; eksik çıkarsa ekleriz.
-    """
     root = Element("Invoice")
     SubElement(root, "UUID").text = inv["invoice_uuid"]
     SubElement(root, "IssueDate").text = inv["issue_date"]
     SubElement(root, "DocumentCurrencyCode").text = inv["currency"] or "TRY"
 
-    # Supplier (Satıcı)
     sup = SubElement(root, "AccountingSupplierParty")
     sup_p = SubElement(sup, "Party")
     SubElement(sup_p, "PartyName").text = SELLER_TITLE
@@ -359,7 +393,6 @@ def build_basic_ubl_xml(inv: dict, lines: list[dict]) -> bytes:
     SubElement(addr, "CitySubdivisionName").text = SELLER_DISTRICT
     SubElement(sup_p, "ElectronicMail").text = SELLER_EMAIL
 
-    # Customer (Alıcı)
     cus = SubElement(root, "AccountingCustomerParty")
     cus_p = SubElement(cus, "Party")
     SubElement(cus_p, "PartyName").text = inv.get("customer_name") or ""
@@ -369,7 +402,6 @@ def build_basic_ubl_xml(inv: dict, lines: list[dict]) -> bytes:
     SubElement(caddr, "CityName").text = inv.get("customer_city") or ""
     SubElement(caddr, "CitySubdivisionName").text = inv.get("customer_district") or ""
 
-    # Lines
     for i, l in enumerate(lines, start=1):
         il = SubElement(root, "InvoiceLine")
         SubElement(il, "ID").text = str(i)
@@ -379,16 +411,12 @@ def build_basic_ubl_xml(inv: dict, lines: list[dict]) -> bytes:
         SubElement(il, "LineExtensionAmount").text = f"{_num(l.get('line_total'),0):.2f}"
         SubElement(il, "VATRate").text = f"{_num(l.get('vat_rate'),10):.2f}"
 
-    # Totals
     SubElement(root, "TaxExclusiveAmount").text = f"{_num(inv.get('subtotal'),0):.2f}"
     SubElement(root, "TaxAmount").text = f"{_num(inv.get('vat_amount'),0):.2f}"
     SubElement(root, "PayableAmount").text = f"{_num(inv.get('total'),0):.2f}"
 
     return tostring(root, encoding="utf-8", method="xml")
 
-# =========================
-# PDF
-# =========================
 def build_pdf(inv: dict, lines: list[dict]) -> str:
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     c = canvas.Canvas(tmp.name, pagesize=A4)
@@ -425,9 +453,6 @@ def build_pdf(inv: dict, lines: list[dict]) -> str:
     c.drawString(60, y, f"{inv.get('customer_address','')} {inv.get('customer_district','')}/{inv.get('customer_city','')}")
     y -= 25
 
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(40, y, "Kalemler")
-    y -= 15
     c.setFont("Helvetica-Bold", 9)
     c.drawString(40, y, "Ürün")
     c.drawString(280, y, "Adet")
@@ -468,7 +493,7 @@ def build_pdf(inv: dict, lines: list[dict]) -> str:
     return tmp.name
 
 # =========================
-# UI (Melontik tarzı: clean + modern)
+# UI
 # =========================
 def ui_shell(title: str, body: str) -> str:
     return f"""
@@ -509,6 +534,10 @@ def ui_shell(title: str, body: str) -> str:
 def root():
     return {"ok": True}
 
+@app.get("/health")
+def health():
+    return {"status": "running"}
+
 @app.get("/env")
 def env_check():
     return {
@@ -518,12 +547,27 @@ def env_check():
         "PANEL_AUTH_SET": bool(os.getenv("PANEL_USER") and os.getenv("PANEL_PASS")),
         "INVOICE_RATE": INVOICE_RATE,
         "PAGE_SIZE": PAGE_SIZE,
+        "DB_PATH": DB_PATH,
         "SELLER_TITLE_SET": SELLER_TITLE != "UNVANINIZ",
         "SELLER_VKN_SET": SELLER_VKN != "0000000000",
     }
 
+@app.get("/debug/find-order")
+def debug_find_order(orderNumber: str = Query(...), auth=Depends(panel_auth)):
+    o = find_order_by_number(orderNumber)
+    if not o:
+        return {"found": False, "orderNumber": orderNumber}
+    return {
+        "found": True,
+        "orderNumber": o.get("orderNumber"),
+        "orderDate": o.get("orderDate"),
+        "status": o.get("status"),
+        "shipmentPackageId": o.get("shipmentPackageId"),
+        "lines_count": len(o.get("lines") or []),
+    }
+
 @app.get("/report")
-def report(start: str = Query(...), end: str = Query(...)):
+def report(start: str = Query(...), end: str = Query(...), auth=Depends(panel_auth)):
     start_ms, end_ms = date_range_to_ms(start, end)
     orders = fetch_orders(start_ms=start_ms, end_ms=end_ms)
 
@@ -562,7 +606,7 @@ def report(start: str = Query(...), end: str = Query(...)):
     }
 
 @app.get("/report/lines")
-def report_lines(start: str = Query(...), end: str = Query(...)):
+def report_lines(start: str = Query(...), end: str = Query(...), auth=Depends(panel_auth)):
     start_ms, end_ms = date_range_to_ms(start, end)
     orders = fetch_orders(start_ms=start_ms, end_ms=end_ms)
 
@@ -584,17 +628,17 @@ def report_lines(start: str = Query(...), end: str = Query(...)):
                 "Kargo": 0.0,
                 "Satıcı İndirim": calc["satici_indirim"],
                 "Trendyol İndirim": calc["trendyol_indirim"],
-                f"Fatura %{int(INVOICE_RATE*100)}": calc.get(f"fatura_%{int(INVOICE_RATE*100)}", 0.0),
+                f"Fatura %10": calc.get("fatura_%10", 0.0),
                 "Net Kâr": calc["net_kar"],
             })
 
     return {"tarih": {"start": start, "end": end}, "adet": len(rows), "rows": rows}
 
 @app.get("/report/excel")
-def report_excel(start: str = Query(...), end: str = Query(...)):
-    data = report_lines(start, end)
+def report_excel(start: str = Query(...), end: str = Query(...), auth=Depends(panel_auth)):
+    data = report_lines(start, end, auth=auth)
     rows = data["rows"]
-    sumdata = report(start, end)
+    sumdata = report(start, end, auth=auth)
 
     wb = Workbook()
     ws1 = wb.active
@@ -627,6 +671,7 @@ def report_excel(start: str = Query(...), end: str = Query(...)):
 def app_dashboard(auth=Depends(panel_auth)):
     today = date.today()
     week_ago = today - timedelta(days=6)
+
     body = f"""
     <div class="grid md:grid-cols-4 gap-3">
       <div class="p-4 rounded-2xl bg-white border shadow-sm">
@@ -788,10 +833,21 @@ def app_invoices(auth=Depends(panel_auth)):
 # =========================
 @app.post("/invoice/draft")
 def invoice_draft(orderNumber: str = Form(...), auth=Depends(panel_auth)):
+    orderNumber = str(orderNumber).strip()
+    if not orderNumber:
+        raise HTTPException(400, "orderNumber boş olamaz")
+
+    # ✅ varsa önce DB'den dön (taslağı çoğaltma)
+    existing = get_existing_invoice_id_by_order(orderNumber)
+    if existing:
+        return RedirectResponse(url="/app/invoices", status_code=303)
+
+    # ✅ Trendyol’dan sağlam bul
     o = find_order_by_number(orderNumber)
     if not o:
-        raise HTTPException(404, f"Sipariş bulunamadı: {orderNumber}")
-    invoice_id = create_invoice_draft_from_order(o)
+        raise HTTPException(404, f"Sipariş bulunamadı: {orderNumber}. Debug: /debug/find-order?orderNumber={orderNumber}")
+
+    _ = create_invoice_draft_from_order(o)
     return RedirectResponse(url="/app/invoices", status_code=303)
 
 @app.get("/invoice/{invoice_id}")
