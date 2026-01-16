@@ -1191,7 +1191,13 @@ def _try_fetch_lines(start_dt: datetime, end_dt: datetime, max_pages: int = 30):
                 "merchantSku": l.get("merchantSku") or l.get("merchantSkuId") or "",
                 "sku": l.get("sku") or "",
                 "campaign": l.get("salesCampaignId") or "",
-   @app.get("/app/profit", response_class=HTMLResponse)
+                "qty": l.get("quantity") or 1,
+                "unit_cost": float(cost_map.get((l.get("merchantSku") or l.get("merchantSkuId") or ""), 0.0)),
+                **c
+            })
+    return flat
+
+@app.get("/app/profit", response_class=HTMLResponse)
 def app_profit(
     start: str = Query(default=""),
     end: str = Query(default=""),
@@ -1392,12 +1398,6 @@ def app_profit(
         <div class="mt-4 p-3 rounded-xl bg-slate-900 text-white">
           <div class="font-extrabold">İpucu</div>
           <div class="text-xs opacity-80">Zarar eden SKU’ları yakala → fiyat/komisyon/indirim kaynaklı mı bak → hedef fiyat ekranından minimum kârlı fiyatı çıkar.</div>
-        </div>
-      </div>
-    </div>
-    """
-    return ui_shell("Kârlılık", body, active="profit")
-akala → fiyat/komisyon/indirim kaynaklı mı bak → hedef fiyat ekranından minimum kârlı fiyatı çıkar.</div>
         </div>
       </div>
     </div>
