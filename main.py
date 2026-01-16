@@ -31,6 +31,18 @@ async def catch_exceptions(request: Request, call_next):
 def debug_last_error():
     return LAST_ERROR["text"] or "No error captured yet. Open /app to reproduce."
 
+
+@app.on_event("startup")
+async def _startup_init():
+    # DB init should not crash the whole service in Render
+    try:
+        init_db()
+        logger.info("DB init OK")
+    except Exception:
+        tb = traceback.format_exc()
+        msg = f"Startup DB init failed\n\n{tb}"
+        LAST_ERROR["text"] = msg
+        logger.error(msg)
 security = HTTPBasic()
 
 # =========================
@@ -157,7 +169,7 @@ def delete_cost(merchant_sku: str):
 
     conn.close()
 
-init_db()
+# init_db()  # moved to startup
 
 # =========================
 # HELPERS
