@@ -576,6 +576,7 @@ def ui_shell(title: str, body: str, active: str = "dashboard") -> str:
             <div class="text-xs text-slate-500">Hızlı Linkler</div>
             <div class="mt-2 flex flex-wrap gap-2">
               <a class="px-3 py-2 rounded-xl bg-slate-900 text-white text-sm font-bold" href="/env">Env Check</a>
+              <a class="px-3 py-2 rounded-xl bg-orange-500 text-white text-sm font-bold" href="/app/costs">Maliyet</a>
               <a class="px-3 py-2 rounded-xl bg-white border text-sm font-bold hover:bg-slate-50" href="/health">Health</a>
             </div>
           </div>
@@ -1494,13 +1495,139 @@ def app_pricing(
 
 
 @app.get("/app/returns", response_class=HTMLResponse)
-def app_returns(auth=Depends(panel_auth)):
-    body = """
+def app_returns(
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    q: str = Query(default=""),
+    auth=Depends(panel_auth)
+):
+    today = date.today()
+    if not start:
+        start_dt = datetime.combine(today - timedelta(days=30), datetime.min.time())
+    else:
+        start_dt = datetime.fromisoformat(start)
+    if not end:
+        end_dt = datetime.combine(today, datetime.max.time())
+    else:
+        end_dt = datetime.fromisoformat(end) + timedelta(days=1) - timedelta(milliseconds=1)
+
+    q = (q or "").strip().lower()
+
+    err = ""
+    rows = []
+    stats = {"lines": 0, "returns": 0, "cancels": 0}
+    try:
+        orders = fetch_orders(start_ms=_ms(start_dt), end_ms=_ms(end_dt), order_number=None, max_pages=40)
+        for o in orders or []:
+            order_no = o.get("orderNumber") or ""
+            for l in (o.get("lines") or []):
+                status_name = (l.get("orderLineItemStatusName") or l.get("orderLineItemStatus") or "").strip()
+                status_l = status_name.lower()
+                stats["lines"] += 1
+                is_return = ("iade" in status_l) or ("return" in status_l)
+                is_cancel = ("iptal" in status_l) or ("cancel" in status_l)
+                if is_return:
+                    stats["returns"] += 1
+                if is_cancel:
+                    stats["cancels"] += 1
+                if not (is_return or is_cancel):
+                    continue
+
+                product = l.get("productName") or ""
+                sku = l.get("merchantSku") or l.get("sku") or ""
+                if q and (q not in product.lower()) and (q not in str(order_no).lower()) and (q not in str(sku).lower()):
+                    continue
+
+                c = calc_profit_for_line(l)
+                rows.append({
+                    "order": order_no,
+                    "status": status_name,
+                    "product": product,
+                    "sku": sku,
+                    "sale": c["satis"],
+                    "net": c["net_kar"],
+                })
+        rows = rows[:500]
+    except Exception as e:
+        err = str(e)
+
+    def tr_money(v: float) -> str:
+        try:
+            return f"{float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except Exception:
+            return str(v)
+
+    body_rows = ""
+    for r in rows:
+        badge = "bg-red-50 text-red-700 border-red-200" if ("iade" in (r["status"] or "").lower() or "return" in (r["status"] or "").lower()) else "bg-amber-50 text-amber-700 border-amber-200"
+        body_rows += f"""
+        <tr class="border-b bg-white">
+          <td class="p-2 font-semibold">{r['order']}</td>
+          <td class="p-2"><span class="px-2 py-1 rounded-xl border {badge} text-xs font-bold">{r['status']}</span></td>
+          <td class="p-2">{r['product']}</td>
+          <td class="p-2 text-slate-500">{r['sku']}</td>
+          <td class="p-2 text-right">{tr_money(r['sale'])}</td>
+          <td class="p-2 text-right font-extrabold">{tr_money(r['net'])}</td>
+        </tr>
+        """
+
+    body = f"""
     <div class="p-4 rounded-2xl bg-white border shadow-sm">
-      <div class="font-extrabold text-lg">İadeler / İptaller</div>
-      <div class="text-xs text-slate-500">Bu ekranı Trendyol iade/iptal endpoint’leri ile dolduracağız. Şimdilik iskelet hazır.</div>
-      <div class="mt-4 p-3 rounded-xl bg-slate-50 border text-sm text-slate-600">
-        İstersen: iade oranı, iade nedenleri, en çok iade alan SKU’lar, iadelerin net kâra etkisi.
+      <div class="flex flex-wrap gap-3 items-end justify-between">
+        <div>
+          <div class="font-extrabold text-lg">İadeler / İptaller</div>
+          <div class="text-xs text-slate-500">Satır durumundan (orderLineItemStatusName) filtrelenir.</div>
+        </div>
+        <form class="flex flex-wrap gap-2 items-end" method="get" action="/app/returns">
+          <div>
+            <div class="text-xs text-slate-500 mb-1">Başlangıç</div>
+            <input name="start" type="date" value="{start_dt.date().isoformat()}" class="px-3 py-2 rounded-xl border bg-slate-50"/>
+          </div>
+          <div>
+            <div class="text-xs text-slate-500 mb-1">Bitiş</div>
+            <input name="end" type="date" value="{end_dt.date().isoformat()}" class="px-3 py-2 rounded-xl border bg-slate-50"/>
+          </div>
+          <div>
+            <div class="text-xs text-slate-500 mb-1">Ara</div>
+            <input name="q" value="{q}" placeholder="sipariş / sku / ürün" class="px-3 py-2 rounded-xl border bg-slate-50 w-56"/>
+          </div>
+          <button class="px-4 py-2 rounded-xl bg-slate-900 text-white font-extrabold shadow-sm" type="submit">Getir</button>
+        </form>
+      </div>
+
+      <div class="mt-3 grid md:grid-cols-3 gap-2 text-sm">
+        <div class="p-3 rounded-xl bg-slate-50 border">
+          <div class="text-xs text-slate-500">Toplam Satır</div>
+          <div class="font-extrabold">{stats['lines']}</div>
+        </div>
+        <div class="p-3 rounded-xl bg-red-50 border border-red-200">
+          <div class="text-xs text-red-700">İade</div>
+          <div class="font-extrabold text-red-800">{stats['returns']}</div>
+        </div>
+        <div class="p-3 rounded-xl bg-amber-50 border border-amber-200">
+          <div class="text-xs text-amber-700">İptal</div>
+          <div class="font-extrabold text-amber-800">{stats['cancels']}</div>
+        </div>
+      </div>
+
+      {("<div class='mt-3 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm'>Hata: "+err+"</div>") if err else ""}
+
+      <div class="mt-4 overflow-auto rounded-xl border">
+        <table class="min-w-full text-sm">
+          <thead class="bg-slate-100 sticky top-0">
+            <tr>
+              <th class="text-left p-2">Sipariş</th>
+              <th class="text-left p-2">Durum</th>
+              <th class="text-left p-2">Ürün</th>
+              <th class="text-left p-2">SKU</th>
+              <th class="text-right p-2">Satış</th>
+              <th class="text-right p-2">Net</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y">
+            {body_rows if body_rows else "<tr><td class='p-3 text-slate-500' colspan='6'>Bu aralıkta iade/iptal yok.</td></tr>"}
+          </tbody>
+        </table>
       </div>
     </div>
     """
@@ -1508,13 +1635,130 @@ def app_returns(auth=Depends(panel_auth)):
 
 
 @app.get("/app/payouts", response_class=HTMLResponse)
-def app_payouts(auth=Depends(panel_auth)):
-    body = """
-    <div class="p-4 rounded-2xl bg-white border shadow-sm">
-      <div class="font-extrabold text-lg">Hakediş / Ödemeler</div>
-      <div class="text-xs text-slate-500">Hakediş ekranı için iskelet. Endpoint bağlanınca gün gün net ödeme ve kesinti kırılımı gelecek.</div>
-      <div class="mt-4 p-3 rounded-xl bg-slate-50 border text-sm text-slate-600">
-        İstersen: “Beklenen ödeme”, “Kesinti türleri”, “Gecikme” gibi kartlar ekleriz.
+def app_payouts(
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    auth=Depends(panel_auth)
+):
+    today = date.today()
+    if not start:
+        start_dt = datetime.combine(today - timedelta(days=14), datetime.min.time())
+    else:
+        start_dt = datetime.fromisoformat(start)
+    if not end:
+        end_dt = datetime.combine(today, datetime.max.time())
+    else:
+        end_dt = datetime.fromisoformat(end) + timedelta(days=1) - timedelta(milliseconds=1)
+
+    err = ""
+    daily = []
+    summary = {"sales": 0.0, "comm": 0.0, "disc": 0.0, "inv": 0.0, "net": 0.0, "cost": 0.0, "real_net": 0.0}
+    try:
+        lines = _try_fetch_lines(start_dt, end_dt, max_pages=40)
+        by_day = {}
+        for x in lines:
+            od = x.get("orderDate")
+            d = (od.date().isoformat() if hasattr(od, "date") and od else "unknown")
+            a = by_day.setdefault(d, {"day": d, "sales": 0.0, "comm": 0.0, "disc": 0.0, "inv": 0.0, "net": 0.0, "cost": 0.0, "real_net": 0.0})
+            q = float(x.get("qty", 1) or 1)
+            cost = float(x.get("unit_cost", 0.0)) * q
+            a["sales"] += x.get("satis", 0.0)
+            a["comm"] += x.get("komisyon", 0.0)
+            a["disc"] += x.get("satici_indirim", 0.0)
+            a["inv"] += x.get("fatura", 0.0)
+            a["net"] += x.get("net_kar", 0.0)
+            a["cost"] += cost
+            a["real_net"] += x.get("net_kar", 0.0) - cost
+
+        daily = sorted(by_day.values(), key=lambda r: r["day"])
+        for r in daily:
+            summary["sales"] += r["sales"]
+            summary["comm"] += r["comm"]
+            summary["disc"] += r["disc"]
+            summary["inv"] += r["inv"]
+            summary["net"] += r["net"]
+            summary["cost"] += r["cost"]
+            summary["real_net"] += r["real_net"]
+    except Exception as e:
+        err = str(e)
+
+    def tr_money(v: float) -> str:
+        try:
+            return f"{float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except Exception:
+            return str(v)
+
+    rows = ""
+    for r in daily:
+        rows += f"""
+        <tr class="border-b bg-white">
+          <td class="p-2 font-semibold whitespace-nowrap">{r['day']}</td>
+          <td class="p-2 text-right">{tr_money(r['sales'])}</td>
+          <td class="p-2 text-right">{tr_money(r['comm'])}</td>
+          <td class="p-2 text-right">{tr_money(r['disc'])}</td>
+          <td class="p-2 text-right">{tr_money(r['inv'])}</td>
+          <td class="p-2 text-right">{tr_money(r['cost'])}</td>
+          <td class="p-2 text-right font-extrabold">{tr_money(r['real_net'])}</td>
+        </tr>
+        """
+
+    body = f"""
+    <div class="grid lg:grid-cols-3 gap-3">
+      <div class="lg:col-span-2 p-4 rounded-2xl bg-white border shadow-sm">
+        <div class="flex flex-wrap gap-3 items-end justify-between">
+          <div>
+            <div class="font-extrabold text-lg">Hakediş (Tahmini)</div>
+            <div class="text-xs text-slate-500">Gün gün: satış → kesintiler → tahmini gerçek net.</div>
+          </div>
+          <form class="flex flex-wrap gap-2 items-end" method="get" action="/app/payouts">
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Başlangıç</div>
+              <input name="start" type="date" value="{start_dt.date().isoformat()}" class="px-3 py-2 rounded-xl border bg-slate-50"/>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Bitiş</div>
+              <input name="end" type="date" value="{end_dt.date().isoformat()}" class="px-3 py-2 rounded-xl border bg-slate-50"/>
+            </div>
+            <button class="px-4 py-2 rounded-xl bg-slate-900 text-white font-extrabold shadow-sm" type="submit">Getir</button>
+          </form>
+        </div>
+
+        {("<div class='mt-3 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm'>Hata: "+err+"</div>") if err else ""}
+
+        <div class="mt-4 overflow-auto rounded-xl border">
+          <table class="min-w-full text-sm">
+            <thead class="bg-slate-100 sticky top-0">
+              <tr>
+                <th class="text-left p-2">Gün</th>
+                <th class="text-right p-2">Satış</th>
+                <th class="text-right p-2">Komisyon</th>
+                <th class="text-right p-2">İndirim</th>
+                <th class="text-right p-2">Fatura</th>
+                <th class="text-right p-2">Maliyet</th>
+                <th class="text-right p-2">Tahmini Gerçek Net</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y">
+              {rows if rows else "<tr><td class='p-3 text-slate-500' colspan='7'>Kayıt yok.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="mt-3 text-xs text-slate-500">
+          Not: Trendyol'un gerçek hakediş ekranındaki kesintiler farklı kalemler içerebilir. Bu tablo “yönetim” amaçlı tahmindir.
+        </div>
+      </div>
+
+      <div class="p-4 rounded-2xl bg-white border shadow-sm">
+        <div class="font-extrabold text-lg">Toplam</div>
+        <div class="mt-3 space-y-2 text-sm">
+          <div class="p-3 rounded-xl bg-slate-50 border flex justify-between"><span>Satış</span><b>{tr_money(summary['sales'])}</b></div>
+          <div class="p-3 rounded-xl bg-slate-50 border flex justify-between"><span>Komisyon</span><b>{tr_money(summary['comm'])}</b></div>
+          <div class="p-3 rounded-xl bg-slate-50 border flex justify-between"><span>İndirim</span><b>{tr_money(summary['disc'])}</b></div>
+          <div class="p-3 rounded-xl bg-slate-50 border flex justify-between"><span>Fatura</span><b>{tr_money(summary['inv'])}</b></div>
+          <div class="p-3 rounded-xl bg-slate-50 border flex justify-between"><span>Maliyet</span><b>{tr_money(summary['cost'])}</b></div>
+          <div class="p-3 rounded-xl bg-orange-50 border border-orange-200 flex justify-between"><span class="text-orange-700">Tahmini Gerçek Net</span><b class="text-orange-800">{tr_money(summary['real_net'])}</b></div>
+        </div>
       </div>
     </div>
     """
@@ -1522,13 +1766,110 @@ def app_payouts(auth=Depends(panel_auth)):
 
 
 @app.get("/app/campaigns", response_class=HTMLResponse)
-def app_campaigns(auth=Depends(panel_auth)):
-    body = """
+def app_campaigns(
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    auth=Depends(panel_auth)
+):
+    today = date.today()
+    if not start:
+        start_dt = datetime.combine(today - timedelta(days=30), datetime.min.time())
+    else:
+        start_dt = datetime.fromisoformat(start)
+    if not end:
+        end_dt = datetime.combine(today, datetime.max.time())
+    else:
+        end_dt = datetime.fromisoformat(end) + timedelta(days=1) - timedelta(milliseconds=1)
+
+    err = ""
+    rows = []
+    try:
+        lines = _try_fetch_lines(start_dt, end_dt, max_pages=40)
+        agg = {}
+        for x in lines:
+            camp = x.get("campaign") or "0"
+            key = str(camp)
+            a = agg.setdefault(key, {"campaign": key, "qty": 0, "sales": 0.0, "comm": 0.0, "disc": 0.0, "inv": 0.0, "net": 0.0, "cost": 0.0, "real_net": 0.0})
+            q = float(x.get("qty", 1) or 1)
+            a["qty"] += int(q)
+            a["sales"] += x.get("satis", 0.0)
+            a["comm"] += x.get("komisyon", 0.0)
+            a["disc"] += x.get("satici_indirim", 0.0)
+            a["inv"] += x.get("fatura", 0.0)
+            a["net"] += x.get("net_kar", 0.0)
+            cost = float(x.get("unit_cost", 0.0)) * q
+            a["cost"] += cost
+            a["real_net"] += x.get("net_kar", 0.0) - cost
+        rows = sorted(agg.values(), key=lambda r: r.get("real_net", 0.0))
+    except Exception as e:
+        err = str(e)
+
+    def tr_money(v: float) -> str:
+        try:
+            return f"{float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except Exception:
+            return str(v)
+
+    body_rows = ""
+    for r in rows:
+        badge = "bg-red-50 text-red-700 border-red-200" if r["real_net"] < 0 else "bg-emerald-50 text-emerald-700 border-emerald-200"
+        body_rows += f"""
+        <tr class="border-b bg-white">
+          <td class="p-2 font-semibold">#{r['campaign']}</td>
+          <td class="p-2 text-right">{r['qty']}</td>
+          <td class="p-2 text-right">{tr_money(r['sales'])}</td>
+          <td class="p-2 text-right">{tr_money(r['comm'])}</td>
+          <td class="p-2 text-right">{tr_money(r['disc'])}</td>
+          <td class="p-2 text-right">{tr_money(r['inv'])}</td>
+          <td class="p-2 text-right">{tr_money(r['cost'])}</td>
+          <td class="p-2 text-right font-extrabold"><span class="px-2 py-1 rounded-xl border {badge}">{tr_money(r['real_net'])}</span></td>
+        </tr>
+        """
+
+    body = f"""
     <div class="p-4 rounded-2xl bg-white border shadow-sm">
-      <div class="font-extrabold text-lg">Kampanyalar / İndirimler</div>
-      <div class="text-xs text-slate-500">Kampanya bazlı net kâr etkisi, indirim kırılımı, kampanya performansı. Şimdilik iskelet.</div>
-      <div class="mt-4 p-3 rounded-xl bg-slate-50 border text-sm text-slate-600">
-        Mevcut sipariş satırlarından salesCampaignId yakalıyoruz. Bir sonraki adımda kampanya bazlı kâr tablosunu gerçek veriyle doldururum.
+      <div class="flex flex-wrap gap-3 items-end justify-between">
+        <div>
+          <div class="font-extrabold text-lg">Kampanyalar / İndirim Etkisi</div>
+          <div class="text-xs text-slate-500">Sipariş satırlarından <b>salesCampaignId</b> ile kampanya kârlılığı.</div>
+        </div>
+        <form class="flex flex-wrap gap-2 items-end" method="get" action="/app/campaigns">
+          <div>
+            <div class="text-xs text-slate-500 mb-1">Başlangıç</div>
+            <input name="start" type="date" value="{start_dt.date().isoformat()}" class="px-3 py-2 rounded-xl border bg-slate-50"/>
+          </div>
+          <div>
+            <div class="text-xs text-slate-500 mb-1">Bitiş</div>
+            <input name="end" type="date" value="{end_dt.date().isoformat()}" class="px-3 py-2 rounded-xl border bg-slate-50"/>
+          </div>
+          <button class="px-4 py-2 rounded-xl bg-slate-900 text-white font-extrabold shadow-sm" type="submit">Getir</button>
+        </form>
+      </div>
+
+      {("<div class='mt-3 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm'>Hata: "+err+"</div>") if err else ""}
+
+      <div class="mt-4 overflow-auto rounded-xl border">
+        <table class="min-w-full text-sm">
+          <thead class="bg-slate-100 sticky top-0">
+            <tr>
+              <th class="text-left p-2">Kampanya</th>
+              <th class="text-right p-2">Adet</th>
+              <th class="text-right p-2">Satış</th>
+              <th class="text-right p-2">Komisyon</th>
+              <th class="text-right p-2">İndirim</th>
+              <th class="text-right p-2">Fatura</th>
+              <th class="text-right p-2">Maliyet</th>
+              <th class="text-right p-2">Gerçek Net</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y">
+            {body_rows if body_rows else "<tr><td class='p-3 text-slate-500' colspan='8'>Kayıt yok.</td></tr>"}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="mt-3 text-xs text-slate-500">
+        İpucu: Gerçek Net <b>eksi</b> olan kampanyalarda fiyat/indirim/komisyonu gözden geçir.
       </div>
     </div>
     """
