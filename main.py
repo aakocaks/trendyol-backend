@@ -2,6 +2,8 @@ from fastapi import Request, FastAPI, Depends, HTTPException, status, Query, For
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 import os, base64, requests, tempfile, sqlite3, uuid
+import traceback
+import logging
 from datetime import datetime, date, timedelta
 from openpyxl import Workbook
 from reportlab.lib.pagesizes import A4
