@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Form
+from fastapi import Request, FastAPI, Depends, HTTPException, status, Query, Form
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 import os, base64, requests, tempfile, sqlite3, uuid
@@ -10,6 +10,26 @@ from typing import Optional
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 app = FastAPI(title="Trendyol Kar/Zarar + e-Arşiv Taslak (Sağlam)")
+
+logger = logging.getLogger("app")
+logging.basicConfig(level=logging.INFO)
+
+LAST_ERROR = {"text": ""}
+
+@app.middleware("http")
+async def catch_exceptions(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception:
+        tb = traceback.format_exc()
+        msg = f"ERROR on {request.method} {request.url}\n\n{tb}"
+        LAST_ERROR["text"] = msg
+        logger.error(msg)
+        return PlainTextResponse("Internal Server Error\n\n" + tb, status_code=500)
+
+@app.get("/debug/last-error", response_class=PlainTextResponse)
+def debug_last_error():
+    return LAST_ERROR["text"] or "No error captured yet. Open /app to reproduce."
 
 security = HTTPBasic()
 
