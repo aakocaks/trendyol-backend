@@ -787,7 +787,7 @@ def app_dashboard(auth=Depends(panel_auth)):
     today = date.today()
     week_ago = today - timedelta(days=6)
 
-    body = f"""
+    body_template = """
     <div class="grid md:grid-cols-4 gap-3">
       <div class="p-4 rounded-2xl bg-white border shadow-sm">
         <div class="text-xs text-slate-500">Sipariş</div>
@@ -813,11 +813,11 @@ def app_dashboard(auth=Depends(panel_auth)):
           <div class="flex flex-wrap gap-3 items-end">
             <div>
               <div class="text-xs text-slate-500 mb-1">Başlangıç</div>
-              <input id="start" type="date" value="{week_ago.isoformat()}" class="px-3 py-2 rounded-xl border bg-slate-50"/>
+              <input id="start" type="date" value="__START__" class="px-3 py-2 rounded-xl border bg-slate-50"/>
             </div>
             <div>
               <div class="text-xs text-slate-500 mb-1">Bitiş</div>
-              <input id="end" type="date" value="{today.isoformat()}" class="px-3 py-2 rounded-xl border bg-slate-50"/>
+              <input id="end" type="date" value="__END__" class="px-3 py-2 rounded-xl border bg-slate-50"/>
             </div>
             <button onclick="loadAll()" class="px-4 py-2 rounded-xl bg-orange-500 text-white font-extrabold shadow-sm">Raporu Getir</button>
           </div>
@@ -926,6 +926,7 @@ async function loadAll(){
 }
 </script>
 """
+    body = body_template.replace("__START__", week_ago.isoformat()).replace("__END__", today.isoformat())
     return ui_shell("Dashboard", body, active="dashboard")
 
 @app.get("/app/invoices", response_class=HTMLResponse)
