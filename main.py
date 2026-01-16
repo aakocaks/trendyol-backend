@@ -927,7 +927,7 @@ async function loadAll(){
 }
 </script>
 """
-    body = body_template.replace("__START__", week_ago.isoformat()).replace("__END__", today.isoformat())
+    body = body_template.replace("__START__", week_ago.isoformat()).replace("__END__", today.isoformat()).replace("__ROWS_LOSS__", rows_loss or "<tr><td class='p-3 text-slate-500' colspan='4'>Yok</td></tr>").replace("__ROWS_PROFIT__", rows_profit or "<tr><td class='p-3 text-slate-500' colspan='4'>Yok</td></tr>")
     return ui_shell("Dashboard", body, active="dashboard")
 
 @app.get("/app/invoices", response_class=HTMLResponse)
@@ -1191,18 +1191,13 @@ def _try_fetch_lines(start_dt: datetime, end_dt: datetime, max_pages: int = 30):
                 "merchantSku": l.get("merchantSku") or l.get("merchantSkuId") or "",
                 "sku": l.get("sku") or "",
                 "campaign": l.get("salesCampaignId") or "",
-                "qty": l.get("quantity") or 1,
-                "unit_cost": float(cost_map.get((l.get("merchantSku") or l.get("merchantSkuId") or ""), 0.0)),
-                **c
-            })
-    return flat
-
-
-@app.get("/app/profit", response_class=HTMLResponse)
+   @app.get("/app/profit", response_class=HTMLResponse)
 def app_profit(
     start: str = Query(default=""),
     end: str = Query(default=""),
     group: str = Query(default="sku"),
+    q: str = Query(default=""),
+    sort: str = Query(default="real_net"),
     auth=Depends(panel_auth)
 ):
     # Kârlılık ekranı: Ürün/SKU bazlı ve Sipariş bazlı özet.
@@ -1217,12 +1212,20 @@ def app_profit(
         end_dt = datetime.fromisoformat(end) + timedelta(days=1) - timedelta(milliseconds=1)
 
     group = group if group in ("sku", "order") else "sku"
+    q = (q or "").strip().lower()
+    sort = sort if sort in ("real_net","net","sales") else "real_net"
 
     err = ""
     rows = []
     summary = {"sales": 0.0, "net": 0.0, "comm": 0.0, "inv": 0.0, "disc": 0.0, "cost": 0.0, "real_net": 0.0, "count": 0}
     try:
         lines = _try_fetch_lines(start_dt, end_dt, max_pages=40)
+        if q:
+            filtered = []
+            for x in lines:
+                if (q in str(x.get('orderNumber','')).lower()) or (q in str(x.get('merchantSku','')).lower()) or (q in str(x.get('sku','')).lower()) or (q in str(x.get('productName','')).lower()):
+                    filtered.append(x)
+            lines = filtered
         summary["count"] = len(lines)
         for x in lines:
             summary["sales"] += x.get("satis", 0.0)
@@ -1259,7 +1262,7 @@ def app_profit(
                 a["cost"] += float(x.get("unit_cost", 0.0)) * float(x.get("qty", 1) or 1)
                 a["real_net"] += x.get("net_kar", 0.0) - (float(x.get("unit_cost", 0.0)) * float(x.get("qty", 1) or 1))
 
-        rows = sorted(agg.values(), key=lambda r: r.get("real_net", r["net"]))
+        rows = sorted(agg.values(), key=lambda r: r.get(sort, 0.0))
     except Exception as e:
         err = str(e)
 
@@ -1307,6 +1310,18 @@ def app_profit(
               <select name="group" class="px-3 py-2 rounded-xl border bg-slate-50">
                 <option value="sku" {"selected" if group=="sku" else ""}>Ürün/SKU</option>
                 <option value="order" {"selected" if group=="order" else ""}>Sipariş</option>
+              </select>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Ara</div>
+              <input name="q" value="{q}" placeholder="sku / ürün / sipariş" class="px-3 py-2 rounded-xl border bg-slate-50 w-56"/>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Sırala</div>
+              <select name="sort" class="px-3 py-2 rounded-xl border bg-slate-50">
+                <option value="real_net" {"selected" if sort=="real_net" else ""}>Gerçek Net</option>
+                <option value="net" {"selected" if sort=="net" else ""}>Net</option>
+                <option value="sales" {"selected" if sort=="sales" else ""}>Satış</option>
               </select>
             </div>
             <button class="px-4 py-2 rounded-xl bg-slate-900 text-white font-extrabold shadow-sm" type="submit">Analiz</button>
@@ -1377,6 +1392,12 @@ def app_profit(
         <div class="mt-4 p-3 rounded-xl bg-slate-900 text-white">
           <div class="font-extrabold">İpucu</div>
           <div class="text-xs opacity-80">Zarar eden SKU’ları yakala → fiyat/komisyon/indirim kaynaklı mı bak → hedef fiyat ekranından minimum kârlı fiyatı çıkar.</div>
+        </div>
+      </div>
+    </div>
+    """
+    return ui_shell("Kârlılık", body, active="profit")
+akala → fiyat/komisyon/indirim kaynaklı mı bak → hedef fiyat ekranından minimum kârlı fiyatı çıkar.</div>
         </div>
       </div>
     </div>
